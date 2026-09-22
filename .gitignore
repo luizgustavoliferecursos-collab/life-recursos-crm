@@ -1,0 +1,7 @@
+python-backend/.env
+python-backend/.venv/
+python-backend/__pycache__/
+*.pyc
+*.json
+*token*
+*.pem
