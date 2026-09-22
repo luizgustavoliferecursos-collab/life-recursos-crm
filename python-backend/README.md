@@ -1,31 +1,19 @@
 # LIFE Recursos API
 
-Esta API reaproveita o mesmo fluxo já validado: Claude → Google Drive → Supabase.
+Backend FastAPI do LIFE Recursos CRM.
 
-Para uploads novos, o Google Drive usa OAuth da conta proprietária. A Service Account
-continua disponível como alternativa, mas contas de serviço não possuem cota própria
-para criar arquivos em pastas do Meu Drive.
+## Endpoints
 
-## O que foi acrescentado
+- `GET /health`
+- `GET /api/dashboard`
+- `GET /api/drive/status`
+- `GET /api/funcionarios`
+- `GET /api/documentos`
+- `GET /api/condominios`
+- `POST /api/documentos/processar`
 
-- upload manual de PDF, JPG e PNG;
-- conversão de imagem para PDF antes da leitura;
-- retorno estruturado para o frontend;
-- consulta de funcionários e documentos;
-- definição de cargo pelo CRM;
-- proteção opcional por token entre frontend e backend.
+O endpoint de processamento aceita múltiplos arquivos PDF, JPG e PNG. Imagens são convertidas em PDF em memória antes da leitura pela IA. O fluxo preserva a automação validada: Claude identifica o documento, o funcionário é consultado/criado no Supabase, o arquivo é organizado no Google Drive e o registro é gravado em `documentos`.
 
-## Preparação no Windows
+Credenciais nunca ficam no repositório. Em hospedagem, use variáveis secretas. Para Google OAuth, salve o conteúdo JSON diretamente em variável secreta ou em Base64; nenhum caminho `C:\...` é necessário.
 
-1. Faça uma cópia de `.env.example` com o nome `.env`.
-2. Confira os caminhos das chaves e os IDs das pastas.
-   O cliente OAuth deve estar em `C:\json chaves\google_oauth_client.json`.
-3. Defina `LIFE_BACKEND_TOKEN` com um valor longo e secreto.
-4. Instale as dependências somente quando estiver pronto para testar:
-   `python -m pip install -r requirements.txt`
-5. Inicie a API: `uvicorn app:app --reload --host 127.0.0.1 --port 8000`
-
-Na primeira operação que acessar o Drive, o navegador abrirá a autorização do Google.
-Depois da aprovação, `google_oauth_token.json` será criado automaticamente e reutilizado.
-
-Nenhuma chave deve ser enviada para o frontend ou colocada no repositório.
+O backend evita nova gravação quando encontra o mesmo nome final de documento para o mesmo funcionário/tipo/ano.
