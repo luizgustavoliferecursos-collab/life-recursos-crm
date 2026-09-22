@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: life-recursos-api
+    runtime: docker
+    rootDir: python-backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: GOOGLE_AUTH_MODE
+        value: oauth
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-5-20250929
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_JSON
+        sync: false
+      - key: GOOGLE_OAUTH_TOKEN_JSON
+        sync: false
+      - key: DRIVE_INBOX_FOLDER_ID
+        sync: false
+      - key: DRIVE_EMPLOYEES_FOLDER_ID
+        sync: false
+      - key: DRIVE_PENDING_FOLDER_ID
+        sync: false
+      - key: LIFE_BACKEND_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
