@@ -12,6 +12,7 @@ type Dashboard = {
   recentes: any[];
   pendencias: any[];
   vencimentos: any[];
+  financeiro: {a_receber: number; a_pagar: number; vencido_receita: number; vencido_despesa: number};
 };
 
 const STATUS_VALIDADE_LABEL: Record<string, string> = {
@@ -40,6 +41,17 @@ const ESCALA_STATUS_LABEL: Record<string, string> = {
   falta: "Falta",
   substituido: "Substituído",
 };
+const CATEGORIAS_DESPESA = ["Folha de pagamento", "INSS/FGTS", "Uniforme/EPI", "Fornecedor", "Outro"];
+const LANCAMENTO_STATUS_LABEL: Record<string, string> = {
+  pendente: "Pendente",
+  pago: "Pago",
+  atrasado: "Atrasado",
+};
+
+function formatMoney(value: any) {
+  const n = Number(value);
+  return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
+}
 
 const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea" | "datalist"; options?: string[]}[] = [
   {key: "nome", label: "Nome completo"},
@@ -106,6 +118,9 @@ export default function Home() {
   const [postoModal, setPostoModal] = useState<{mode: "create" | "edit"; posto: any} | null>(null);
   const [escalaData, setEscalaData] = useState(() => new Date().toISOString().slice(0, 10));
   const [escalas, setEscalas] = useState<any[]>([]);
+  const [lancamentos, setLancamentos] = useState<any[]>([]);
+  const [lancamentoFiltro, setLancamentoFiltro] = useState("");
+  const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
 
   async function refresh() {
     setError("");
@@ -128,8 +143,18 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
+      await loadFinanceiro();
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
+    }
+  }
+
+  async function loadFinanceiro() {
+    try {
+      const r = await api("/api/financeiro" + (lancamentoFiltro ? `?status=${lancamentoFiltro}` : ""));
+      setLancamentos(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar financeiro.");
     }
   }
 
@@ -157,6 +182,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => { loadEscalas(escalaData); }, [escalaData]);
+  useEffect(() => { loadFinanceiro(); }, [lancamentoFiltro]);
 
   useEffect(() => {
     if (me?.papel === "admin") loadUsuarios();
@@ -407,6 +433,53 @@ export default function Home() {
     }
   }
 
+  async function saveLancamento(data: Record<string, any>) {
+    const mode = lancamentoModal?.mode;
+    const id = lancamentoModal?.lancamento?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["tipo", "condominio_id", "funcionario_id", "categoria", "descricao", "valor", "vencimento", "origem"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = key === "valor" ? Number(value) : value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.tipo;
+      await api(`/api/financeiro/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/financeiro", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setLancamentoModal(null);
+    await refresh();
+  }
+
+  async function marcarPago(id: string) {
+    if (!window.confirm("Confirma marcar este lançamento como pago hoje?")) return;
+    try {
+      await api(`/api/financeiro/${id}/pagar`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
+      await loadFinanceiro();
+      await refresh();
+    } catch (e: any) {
+      setError(e.message || "Erro ao marcar pagamento.");
+    }
+  }
+
+  async function gerarMensalidades() {
+    const mes = new Date().toISOString().slice(0, 7);
+    if (!window.confirm(`Gerar cobranças de mensalidade para todos os contratos ativos, referentes a ${mes}?`)) return;
+    try {
+      const r = await api("/api/financeiro/gerar-mensalidades", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({mes}),
+      });
+      window.alert(`${r.criados} cobrança(s) gerada(s). ${r.ja_existentes} já existiam. ${r.ignorados_sem_valor} contrato(s) sem valor mensal definido.`);
+      await loadFinanceiro();
+      await refresh();
+    } catch (e: any) {
+      setError(e.message || "Erro ao gerar mensalidades.");
+    }
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -420,6 +493,7 @@ export default function Home() {
     ["condominios", "Condomínios"],
     ["contratos", "Contratos"],
     ["postos", "Postos & Escalas"],
+    ["financeiro", "Financeiro"],
     ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
   ];
 
@@ -448,6 +522,8 @@ export default function Home() {
               <article><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
               <article><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
               <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
+              <article><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
+              <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
             </section>
             <section className="grid-two">
               <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
@@ -584,6 +660,42 @@ export default function Home() {
             </section>
           </>
         )}
+        {tab === "financeiro" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Financeiro</h3>
+                <span>{lancamentos.length} lançamentos</span>
+              </div>
+              <div className="row-actions">
+                <select value={lancamentoFiltro} onChange={e => setLancamentoFiltro(e.target.value)}>
+                  <option value="">Todos os status</option>
+                  <option value="pendente">Pendente</option>
+                  <option value="atrasado">Atrasado</option>
+                  <option value="pago">Pago</option>
+                </select>
+                <button onClick={gerarMensalidades}>Gerar cobranças do mês</button>
+                <button className="primary" onClick={() => setLancamentoModal({mode: "create", lancamento: {}})}>Novo lançamento</button>
+              </div>
+            </div>
+            {!lancamentos.length ? <div className="empty">Nenhum lançamento encontrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Condomínio/Funcionário</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {lancamentos.map((l: any) => <tr key={l.id}>
+                  <td><span className={"badge " + (l.tipo === "despesa" ? "warn" : "")}>{l.tipo === "receita" ? "Receita" : "Despesa"}</span></td>
+                  <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
+                  <td>{l.categoria || l.descricao || "—"}</td>
+                  <td>{formatMoney(l.valor)}</td>
+                  <td>{l.vencimento || "—"}</td>
+                  <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
+                  <td className="row-actions">
+                    <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
+                    {l.status_calculado !== "pago" && <button className="link-btn" onClick={() => marcarPago(l.id)}>Marcar pago</button>}
+                  </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
             <div className="panel-head">
@@ -665,6 +777,17 @@ export default function Home() {
           condominios={condominios}
           onCancel={() => setPostoModal(null)}
           onSave={savePosto}
+        />
+      )}
+
+      {lancamentoModal && (
+        <LancamentoModal
+          mode={lancamentoModal.mode}
+          lancamento={lancamentoModal.lancamento}
+          condominios={condominios}
+          funcionarios={funcionarios}
+          onCancel={() => setLancamentoModal(null)}
+          onSave={saveLancamento}
         />
       )}
     </div>
@@ -1049,6 +1172,86 @@ function PostoModal({mode, posto, condominios, onCancel, onSave}: {mode: "create
               <option value="inativo">Inativo</option>
             </select>
           </label>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function LancamentoModal({mode, lancamento, condominios, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; lancamento: any; condominios: any[]; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    tipo: lancamento?.tipo || "receita",
+    condominio_id: lancamento?.condominio_id || "",
+    funcionario_id: lancamento?.funcionario_id || "",
+    categoria: lancamento?.categoria || "",
+    descricao: lancamento?.descricao || "",
+    valor: lancamento?.valor || "",
+    vencimento: lancamento?.vencimento || "",
+    origem: lancamento?.origem || "outro",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar lançamento.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo lançamento" : "Editar lançamento"}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Tipo
+            <select value={form.tipo} onChange={e => setForm(f => ({...f, tipo: e.target.value}))} disabled={mode === "edit"}>
+              <option value="receita">Receita</option>
+              <option value="despesa">Despesa</option>
+            </select>
+          </label>
+          <label>Valor (R$)<input type="number" step="0.01" value={form.valor} onChange={e => setForm(f => ({...f, valor: e.target.value}))} required /></label>
+          <label>
+            Condomínio (opcional)
+            <select value={form.condominio_id} onChange={e => setForm(f => ({...f, condominio_id: e.target.value}))}>
+              <option value="">—</option>
+              {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+          <label>
+            Funcionário (opcional)
+            <select value={form.funcionario_id} onChange={e => setForm(f => ({...f, funcionario_id: e.target.value}))}>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+          </label>
+          <label>
+            Categoria
+            {form.tipo === "despesa" ? (
+              <select value={form.categoria} onChange={e => setForm(f => ({...f, categoria: e.target.value}))}>
+                <option value="">—</option>
+                {CATEGORIAS_DESPESA.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input value={form.categoria} onChange={e => setForm(f => ({...f, categoria: e.target.value}))} placeholder="Mensalidade, taxa extra..." />
+            )}
+          </label>
+          <label>Vencimento<input type="date" value={form.vencimento} onChange={e => setForm(f => ({...f, vencimento: e.target.value}))} /></label>
+          <label className="span-2">Descrição<textarea value={form.descricao} onChange={e => setForm(f => ({...f, descricao: e.target.value}))} rows={2} /></label>
         </div>
         {error && <div className="alert error">{error}</div>}
         <div className="modal-actions">

@@ -162,6 +162,34 @@ def compute_status_validade(data_validade: Any) -> str:
         return "vencendo"
     return "valido"
 
+def compute_status_lancamento(row: dict[str, Any]) -> str:
+    # Igual ao status_validade de documentos: "atrasado" e sempre recalculado na
+    # leitura a partir do vencimento, nunca fica desatualizado sem job/cron.
+    status = row.get("status") or "pendente"
+    if status == "pago":
+        return "pago"
+    vencimento = row.get("vencimento")
+    if vencimento:
+        if isinstance(vencimento, str):
+            try:
+                vencimento = date.fromisoformat(vencimento[:10])
+            except ValueError:
+                vencimento = None
+        if vencimento and vencimento < date.today():
+            return "atrasado"
+    return "pendente"
+
+def with_live_status_financeiro(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for row in rows:
+        row["status_calculado"] = compute_status_lancamento(row)
+    return rows
+
+def month_bounds(mes: str) -> tuple[date, date]:
+    ano, mes_num = (int(part) for part in mes.split("-"))
+    inicio = date(ano, mes_num, 1)
+    fim = date(ano + 1, 1, 1) if mes_num == 12 else date(ano, mes_num + 1, 1)
+    return inicio, fim
+
 def image_to_pdf(data: bytes) -> bytes:
     with Image.open(io.BytesIO(data)) as image:
         if image.mode not in ("RGB", "L"):
@@ -588,6 +616,74 @@ class EscalaFalta(BaseModel):
 
 class EscalaSubstituir(BaseModel):
     substituto_id: str
+
+VALID_TIPO_LANCAMENTO = ["receita", "despesa"]
+VALID_STATUS_LANCAMENTO = ["pendente", "pago", "atrasado"]
+VALID_ORIGEM_LANCAMENTO = ["contrato", "folha", "outro"]
+
+class LancamentoCreate(BaseModel):
+    tipo: str
+    condominio_id: str | None = None
+    funcionario_id: str | None = None
+    categoria: str | None = None
+    descricao: str | None = None
+    valor: float
+    vencimento: date | None = None
+    data_pagamento: date | None = None
+    status: str | None = None
+    origem: str | None = None
+
+    @field_validator("tipo")
+    @classmethod
+    def valida_tipo(cls, value: str) -> str:
+        if value not in VALID_TIPO_LANCAMENTO:
+            raise ValueError(f"Tipo invalido. Use um de: {', '.join(VALID_TIPO_LANCAMENTO)}")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_LANCAMENTO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_LANCAMENTO)}")
+        return value
+
+    @field_validator("origem")
+    @classmethod
+    def valida_origem(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_ORIGEM_LANCAMENTO:
+            raise ValueError(f"Origem invalida. Use uma de: {', '.join(VALID_ORIGEM_LANCAMENTO)}")
+        return value
+
+class LancamentoUpdate(BaseModel):
+    condominio_id: str | None = None
+    funcionario_id: str | None = None
+    categoria: str | None = None
+    descricao: str | None = None
+    valor: float | None = None
+    vencimento: date | None = None
+    data_pagamento: date | None = None
+    status: str | None = None
+    origem: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_LANCAMENTO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_LANCAMENTO)}")
+        return value
+
+    @field_validator("origem")
+    @classmethod
+    def valida_origem(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_ORIGEM_LANCAMENTO:
+            raise ValueError(f"Origem invalida. Use uma de: {', '.join(VALID_ORIGEM_LANCAMENTO)}")
+        return value
+
+class LancamentoPagar(BaseModel):
+    data_pagamento: date | None = None
+
+class GerarMensalidades(BaseModel):
+    mes: str = Field(pattern=r"^\d{4}-\d{2}$")
 
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
@@ -1067,6 +1163,107 @@ def substituir_escala(escala_id: str, payload: EscalaSubstituir):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao substituir: {exc}")
 
+@app.get("/api/financeiro")
+def list_financeiro(tipo: str | None = None, status: str | None = None, condominio_id: str | None = None):
+    try:
+        query = (
+            get_supabase()
+            .table("financeiro_lancamentos")
+            .select("*,condominios(nome),funcionarios(nome)")
+            .order("vencimento")
+        )
+        if tipo:
+            query = query.eq("tipo", tipo)
+        if condominio_id:
+            query = query.eq("condominio_id", condominio_id)
+        rows = with_live_status_financeiro(query.execute().data or [])
+        if status:
+            rows = [row for row in rows if row["status_calculado"] == status]
+        return {"items": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar financeiro: {exc}")
+
+@app.post("/api/financeiro", status_code=201)
+def create_financeiro(payload: LancamentoCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("status", "pendente")
+    data.setdefault("origem", "outro")
+    try:
+        result = db.table("financeiro_lancamentos").insert(data).execute()
+        return with_live_status_financeiro(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao criar lancamento: {exc}")
+
+@app.put("/api/financeiro/{lancamento_id}")
+def update_financeiro(lancamento_id: str, payload: LancamentoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
+    try:
+        result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        return with_live_status_financeiro(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar lancamento: {exc}")
+
+@app.post("/api/financeiro/{lancamento_id}/pagar")
+def pagar_financeiro(lancamento_id: str, payload: LancamentoPagar):
+    db = get_supabase()
+    existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
+    data = {
+        "status": "pago",
+        "data_pagamento": (payload.data_pagamento or date.today()).isoformat(),
+    }
+    try:
+        result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        return with_live_status_financeiro(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao marcar pagamento: {exc}")
+
+@app.post("/api/financeiro/gerar-mensalidades")
+def gerar_mensalidades(payload: GerarMensalidades):
+    db = get_supabase()
+    inicio, fim = month_bounds(payload.mes)
+    contratos = db.table("contratos_condominio").select("*").eq("status", "ativo").execute().data or []
+    criados = 0
+    ja_existentes = 0
+    ignorados = 0
+    for contrato in contratos:
+        if not contrato.get("valor_mensal") or not contrato.get("condominio_id"):
+            ignorados += 1
+            continue
+        existing = (
+            db.table("financeiro_lancamentos")
+            .select("id")
+            .eq("condominio_id", contrato["condominio_id"])
+            .eq("origem", "contrato")
+            .gte("vencimento", inicio.isoformat())
+            .lt("vencimento", fim.isoformat())
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            ja_existentes += 1
+            continue
+        db.table("financeiro_lancamentos").insert({
+            "condominio_id": contrato["condominio_id"],
+            "tipo": "receita",
+            "categoria": "Mensalidade",
+            "descricao": contrato.get("objeto") or "Mensalidade do contrato",
+            "valor": contrato["valor_mensal"],
+            "vencimento": date(inicio.year, inicio.month, 10).isoformat(),
+            "status": "pendente",
+            "origem": "contrato",
+        }).execute()
+        criados += 1
+    return {"criados": criados, "ja_existentes": ja_existentes, "ignorados_sem_valor": ignorados}
+
 @app.get("/api/dashboard")
 def dashboard():
     try:
@@ -1081,6 +1278,27 @@ def dashboard():
         vencendo_ou_vencido.sort(key=lambda row: row.get("data_validade") or "")
         condominiums_count = len(db.table("condominios").select("id").execute().data or [])
         pending = [row for row in employees_rows if row.get("cargo") == "Pendente"]
+
+        lancamentos = with_live_status_financeiro(
+            db.table("financeiro_lancamentos").select("tipo,valor,status,vencimento").execute().data or []
+        )
+        a_receber = sum(
+            float(row["valor"] or 0) for row in lancamentos
+            if row["tipo"] == "receita" and row["status_calculado"] in ("pendente", "atrasado")
+        )
+        a_pagar = sum(
+            float(row["valor"] or 0) for row in lancamentos
+            if row["tipo"] == "despesa" and row["status_calculado"] in ("pendente", "atrasado")
+        )
+        vencido_receita = sum(
+            float(row["valor"] or 0) for row in lancamentos
+            if row["tipo"] == "receita" and row["status_calculado"] == "atrasado"
+        )
+        vencido_despesa = sum(
+            float(row["valor"] or 0) for row in lancamentos
+            if row["tipo"] == "despesa" and row["status_calculado"] == "atrasado"
+        )
+
         return {
             "funcionarios": len(employees_rows),
             "documentos": len(all_docs),
@@ -1091,6 +1309,12 @@ def dashboard():
             "recentes": docs_rows,
             "pendencias": pending[:10],
             "vencimentos": vencendo_ou_vencido[:10],
+            "financeiro": {
+                "a_receber": a_receber,
+                "a_pagar": a_pagar,
+                "vencido_receita": vencido_receita,
+                "vencido_despesa": vencido_despesa,
+            },
         }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao montar dashboard: {exc}")
