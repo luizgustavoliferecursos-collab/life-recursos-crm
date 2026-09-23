@@ -33,6 +33,13 @@ const PAPEL_LABEL: Record<string, string> = {
   operacional: "Operacional",
   sindico: "Síndico",
 };
+const TURNOS = ["12x36 Diurno", "12x36 Noturno", "6x1 Diurno", "6x1 Noturno", "Comercial"];
+const ESCALA_STATUS_LABEL: Record<string, string> = {
+  previsto: "Previsto",
+  confirmado: "Confirmado",
+  falta: "Falta",
+  substituido: "Substituído",
+};
 
 const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea" | "datalist"; options?: string[]}[] = [
   {key: "nome", label: "Nome completo"},
@@ -93,17 +100,25 @@ export default function Home() {
   const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
   const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
+  const [contratos, setContratos] = useState<any[]>([]);
+  const [contratoModal, setContratoModal] = useState<{mode: "create" | "edit"; contrato: any} | null>(null);
+  const [postos, setPostos] = useState<any[]>([]);
+  const [postoModal, setPostoModal] = useState<{mode: "create" | "edit"; posto: any} | null>(null);
+  const [escalaData, setEscalaData] = useState(() => new Date().toISOString().slice(0, 10));
+  const [escalas, setEscalas] = useState<any[]>([]);
 
   async function refresh() {
     setError("");
     try {
-      const [d, f, docs, condos, h, ds] = await Promise.all([
+      const [d, f, docs, condos, h, ds, c, p] = await Promise.all([
         api("/api/dashboard"),
         api("/api/funcionarios"),
         api("/api/documentos?limit=200"),
         api("/api/condominios"),
         api("/health"),
         api("/api/drive/status"),
+        api("/api/contratos"),
+        api("/api/postos-trabalho"),
       ]);
       setDashboard(d);
       setFuncionarios(f.items || []);
@@ -111,6 +126,8 @@ export default function Home() {
       setCondominios(condos.items || []);
       setHealth(h);
       setDrive(ds);
+      setContratos(c.items || []);
+      setPostos(p.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -125,10 +142,21 @@ export default function Home() {
     }
   }
 
+  async function loadEscalas(dataAlvo: string) {
+    try {
+      const r = await api(`/api/escalas?data=${dataAlvo}`);
+      setEscalas(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar escalas.");
+    }
+  }
+
   useEffect(() => {
     refresh();
     fetch("/api/auth/me").then(r => r.ok ? r.json() : null).then(setMe).catch(() => setMe(null));
   }, []);
+
+  useEffect(() => { loadEscalas(escalaData); }, [escalaData]);
 
   useEffect(() => {
     if (me?.papel === "admin") loadUsuarios();
@@ -300,6 +328,85 @@ export default function Home() {
     }
   }
 
+  async function saveContrato(data: Record<string, any>) {
+    const mode = contratoModal?.mode;
+    const id = contratoModal?.contrato?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["condominio_id", "objeto", "valor_mensal", "indice_reajuste", "data_inicio", "data_fim", "data_renovacao", "status"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = key === "valor_mensal" ? Number(value) : value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.condominio_id;
+      await api(`/api/contratos/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/contratos", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setContratoModal(null);
+    await refresh();
+  }
+
+  async function savePosto(data: Record<string, any>) {
+    const mode = postoModal?.mode;
+    const id = postoModal?.posto?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["condominio_id", "nome", "cargo", "turno", "carga_horaria_semanal", "status"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = key === "carga_horaria_semanal" ? Number(value) : value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.condominio_id;
+      await api(`/api/postos-trabalho/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/postos-trabalho", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setPostoModal(null);
+    await refresh();
+  }
+
+  async function atribuirEscala(postoId: string, funcionarioId: string) {
+    try {
+      await api("/api/escalas", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({posto_id: postoId, data: escalaData, funcionario_id: funcionarioId || null}),
+      });
+      await loadEscalas(escalaData);
+    } catch (e: any) {
+      setError(e.message || "Erro ao atribuir escala.");
+    }
+  }
+
+  async function marcarFalta(escalaId: string) {
+    const motivo = window.prompt("Motivo da falta (opcional):") || "";
+    try {
+      await api(`/api/escalas/${escalaId}/falta`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({motivo: motivo || null}),
+      });
+      await loadEscalas(escalaData);
+    } catch (e: any) {
+      setError(e.message || "Erro ao marcar falta.");
+    }
+  }
+
+  async function substituirEscala(escalaId: string, substitutoId: string) {
+    if (!substitutoId) return;
+    try {
+      await api(`/api/escalas/${escalaId}/substituir`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({substituto_id: substitutoId}),
+      });
+      await loadEscalas(escalaData);
+    } catch (e: any) {
+      setError(e.message || "Erro ao substituir.");
+    }
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -311,6 +418,8 @@ export default function Home() {
     ["funcionarios", "Funcionários"],
     ["documentos", "Documentos"],
     ["condominios", "Condomínios"],
+    ["contratos", "Contratos"],
+    ["postos", "Postos & Escalas"],
     ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
   ];
 
@@ -396,6 +505,85 @@ export default function Home() {
             />
           </section>
         )}
+        {tab === "contratos" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Contratos</h3><span>{contratos.length} registros</span></div>
+              <button className="primary" onClick={() => setContratoModal({mode: "create", contrato: {}})}>Novo contrato</button>
+            </div>
+            {!contratos.length ? <div className="empty">Nenhum contrato cadastrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Condomínio</th><th>Objeto</th><th>Valor mensal</th><th>Vigência</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {contratos.map(c => <tr key={c.id}>
+                  <td>{c.condominios?.nome || "—"}</td>
+                  <td>{c.objeto || "—"}</td>
+                  <td>{c.valor_mensal ? `R$ ${Number(c.valor_mensal).toLocaleString("pt-BR", {minimumFractionDigits: 2})}` : "—"}</td>
+                  <td>{[c.data_inicio, c.data_fim].filter(Boolean).join(" → ") || "—"}</td>
+                  <td><span className={"badge " + (c.status === "encerrado" ? "warn" : "")}>{c.status === "encerrado" ? "Encerrado" : "Ativo"}</span></td>
+                  <td className="row-actions"><button className="link-btn" onClick={() => setContratoModal({mode: "edit", contrato: c})}>Editar</button></td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "postos" && (
+          <>
+            <section className="panel">
+              <div className="panel-head">
+                <div><h3>Postos de trabalho</h3><span>{postos.length} cadastrados</span></div>
+                <button className="primary" onClick={() => setPostoModal({mode: "create", posto: {}})}>Novo posto</button>
+              </div>
+              {!postos.length ? <div className="empty">Nenhum posto cadastrado.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Condomínio</th><th>Cargo</th><th>Turno</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                  {postos.map(p => <tr key={p.id}>
+                    <td>{p.nome}</td>
+                    <td>{p.condominios?.nome || "—"}</td>
+                    <td>{p.cargo}</td>
+                    <td>{p.turno || "—"}</td>
+                    <td><span className={"badge " + (p.status === "inativo" ? "warn" : "")}>{p.status === "inativo" ? "Inativo" : "Ativo"}</span></td>
+                    <td className="row-actions"><button className="link-btn" onClick={() => setPostoModal({mode: "edit", posto: p})}>Editar</button></td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+            <section className="panel">
+              <div className="panel-head">
+                <div><h3>Escala do dia</h3><span>Quem cobre cada posto</span></div>
+                <input type="date" value={escalaData} onChange={e => setEscalaData(e.target.value)} />
+              </div>
+              {!escalas.length ? <div className="empty">Nenhum posto ativo cadastrado.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Condomínio</th><th>Funcionário</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                  {escalas.map(({posto, escala}: any) => {
+                    const funcionariosAtivos = funcionarios.filter(f => f.status !== "inativo");
+                    return (
+                      <tr key={posto.id}>
+                        <td>{posto.nome}</td>
+                        <td>{posto.condominios?.nome || "—"}</td>
+                        <td>
+                          <select value={escala?.funcionario_id || ""} onChange={e => atribuirEscala(posto.id, e.target.value)}>
+                            <option value="">Vago</option>
+                            {funcionariosAtivos.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+                          </select>
+                        </td>
+                        <td><span className={"badge " + (escala?.status === "falta" ? "danger" : escala?.status === "substituido" ? "warn" : "")}>{escala ? (ESCALA_STATUS_LABEL[escala.status] || escala.status) : "—"}</span></td>
+                        <td className="row-actions">
+                          {escala && escala.status !== "falta" && (
+                            <button className="link-btn" onClick={() => marcarFalta(escala.id)}>Marcar falta</button>
+                          )}
+                          {escala && escala.status === "falta" && (
+                            <select defaultValue="" onChange={e => substituirEscala(escala.id, e.target.value)}>
+                              <option value="">Substituir por...</option>
+                              {funcionariosAtivos.filter((f: any) => f.id !== escala.funcionario_id).map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+                            </select>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody></table></div>
+              )}
+            </section>
+          </>
+        )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
             <div className="panel-head">
@@ -457,6 +645,26 @@ export default function Home() {
           condominios={condominios}
           onCancel={() => setUsuarioModal(null)}
           onSave={saveUsuario}
+        />
+      )}
+
+      {contratoModal && (
+        <ContratoModal
+          mode={contratoModal.mode}
+          contrato={contratoModal.contrato}
+          condominios={condominios}
+          onCancel={() => setContratoModal(null)}
+          onSave={saveContrato}
+        />
+      )}
+
+      {postoModal && (
+        <PostoModal
+          mode={postoModal.mode}
+          posto={postoModal.posto}
+          condominios={condominios}
+          onCancel={() => setPostoModal(null)}
+          onSave={savePosto}
         />
       )}
     </div>
@@ -706,6 +914,142 @@ function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "cr
             </select>
           </label>
         )}
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ContratoModal({mode, contrato, condominios, onCancel, onSave}: {mode: "create" | "edit"; contrato: any; condominios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    condominio_id: contrato?.condominio_id || "",
+    objeto: contrato?.objeto || "",
+    valor_mensal: contrato?.valor_mensal || "",
+    indice_reajuste: contrato?.indice_reajuste || "",
+    data_inicio: contrato?.data_inicio || "",
+    data_fim: contrato?.data_fim || "",
+    data_renovacao: contrato?.data_renovacao || "",
+    status: contrato?.status || "ativo",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar contrato.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo contrato" : "Editar contrato"}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Condomínio
+            <select value={form.condominio_id} onChange={e => setForm(f => ({...f, condominio_id: e.target.value}))} required disabled={mode === "edit"}>
+              <option value="">—</option>
+              {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+          <label>Status
+            <select value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>
+              <option value="ativo">Ativo</option>
+              <option value="encerrado">Encerrado</option>
+            </select>
+          </label>
+          <label className="span-2">Objeto<textarea value={form.objeto} onChange={e => setForm(f => ({...f, objeto: e.target.value}))} rows={2} /></label>
+          <label>Valor mensal (R$)<input type="number" step="0.01" value={form.valor_mensal} onChange={e => setForm(f => ({...f, valor_mensal: e.target.value}))} /></label>
+          <label>Índice de reajuste<input value={form.indice_reajuste} onChange={e => setForm(f => ({...f, indice_reajuste: e.target.value}))} placeholder="IGPM, IPCA..." /></label>
+          <label>Início da vigência<input type="date" value={form.data_inicio} onChange={e => setForm(f => ({...f, data_inicio: e.target.value}))} /></label>
+          <label>Fim da vigência<input type="date" value={form.data_fim} onChange={e => setForm(f => ({...f, data_fim: e.target.value}))} /></label>
+          <label>Data de renovação<input type="date" value={form.data_renovacao} onChange={e => setForm(f => ({...f, data_renovacao: e.target.value}))} /></label>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function PostoModal({mode, posto, condominios, onCancel, onSave}: {mode: "create" | "edit"; posto: any; condominios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    condominio_id: posto?.condominio_id || "",
+    nome: posto?.nome || "",
+    cargo: posto?.cargo || "",
+    turno: posto?.turno || "",
+    carga_horaria_semanal: posto?.carga_horaria_semanal || "",
+    status: posto?.status || "ativo",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar posto.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo posto de trabalho" : `Editar ${posto?.nome || ""}`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Condomínio
+            <select value={form.condominio_id} onChange={e => setForm(f => ({...f, condominio_id: e.target.value}))} required disabled={mode === "edit"}>
+              <option value="">—</option>
+              {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+          <label>Nome do posto<input value={form.nome} onChange={e => setForm(f => ({...f, nome: e.target.value}))} required placeholder="Portaria diurna" /></label>
+          <label>
+            Cargo
+            <select value={form.cargo} onChange={e => setForm(f => ({...f, cargo: e.target.value}))} required>
+              <option value="">—</option>
+              {CARGOS.filter(c => c !== "Pendente").map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label>
+            Turno
+            <select value={form.turno} onChange={e => setForm(f => ({...f, turno: e.target.value}))}>
+              <option value="">—</option>
+              {TURNOS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label>Carga horária semanal<input type="number" value={form.carga_horaria_semanal} onChange={e => setForm(f => ({...f, carga_horaria_semanal: e.target.value}))} /></label>
+          <label>Status
+            <select value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}>
+              <option value="ativo">Ativo</option>
+              <option value="inativo">Inativo</option>
+            </select>
+          </label>
+        </div>
         {error && <div className="alert error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>

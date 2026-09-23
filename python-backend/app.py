@@ -497,6 +497,98 @@ class UsuarioUpdate(BaseModel):
             raise ValueError(f"Papel invalido. Use um de: {', '.join(VALID_PAPEIS)}")
         return value
 
+VALID_STATUS_CONTRATO = ["ativo", "encerrado"]
+VALID_STATUS_POSTO = ["ativo", "inativo"]
+VALID_STATUS_ESCALA = ["previsto", "confirmado", "falta", "substituido"]
+TURNOS_PADRAO = ["12x36 Diurno", "12x36 Noturno", "6x1 Diurno", "6x1 Noturno", "Comercial"]
+
+class ContratoCreate(BaseModel):
+    condominio_id: str
+    objeto: str | None = None
+    valor_mensal: float | None = None
+    indice_reajuste: str | None = None
+    data_inicio: date | None = None
+    data_fim: date | None = None
+    data_renovacao: date | None = None
+    status: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_CONTRATO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONTRATO)}")
+        return value
+
+class ContratoUpdate(BaseModel):
+    objeto: str | None = None
+    valor_mensal: float | None = None
+    indice_reajuste: str | None = None
+    data_inicio: date | None = None
+    data_fim: date | None = None
+    data_renovacao: date | None = None
+    status: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_CONTRATO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONTRATO)}")
+        return value
+
+class PostoCreate(BaseModel):
+    condominio_id: str
+    nome: str = Field(min_length=1)
+    cargo: str
+    turno: str | None = None
+    carga_horaria_semanal: float | None = None
+    status: str | None = None
+
+    @field_validator("cargo")
+    @classmethod
+    def valida_cargo(cls, value: str) -> str:
+        if value not in VALID_ROLES:
+            raise ValueError(f"Cargo invalido. Use um de: {', '.join(VALID_ROLES)}")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_POSTO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_POSTO)}")
+        return value
+
+class PostoUpdate(BaseModel):
+    nome: str | None = None
+    cargo: str | None = None
+    turno: str | None = None
+    carga_horaria_semanal: float | None = None
+    status: str | None = None
+
+    @field_validator("cargo")
+    @classmethod
+    def valida_cargo(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_ROLES:
+            raise ValueError(f"Cargo invalido. Use um de: {', '.join(VALID_ROLES)}")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_POSTO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_POSTO)}")
+        return value
+
+class EscalaAtribuir(BaseModel):
+    posto_id: str
+    data: date
+    funcionario_id: str | None = None
+
+class EscalaFalta(BaseModel):
+    motivo: str | None = None
+
+class EscalaSubstituir(BaseModel):
+    substituto_id: str
+
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
     if year is None:
@@ -820,6 +912,160 @@ def update_user(usuario_id: str, payload: UsuarioUpdate):
         return public_user(result.data[0])
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar usuario: {exc}")
+
+@app.get("/api/contratos")
+def list_contratos(condominio_id: str | None = None):
+    try:
+        query = get_supabase().table("contratos_condominio").select("*,condominios(nome)").order("data_fim")
+        if condominio_id:
+            query = query.eq("condominio_id", condominio_id)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar contratos: {exc}")
+
+@app.post("/api/contratos", status_code=201)
+def create_contrato(payload: ContratoCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("status", "ativo")
+    try:
+        result = db.table("contratos_condominio").insert(data).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao criar contrato: {exc}")
+
+@app.put("/api/contratos/{contrato_id}")
+def update_contrato(contrato_id: str, payload: ContratoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("contratos_condominio").select("id").eq("id", contrato_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Contrato nao encontrado.")
+    try:
+        result = db.table("contratos_condominio").update(data).eq("id", contrato_id).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar contrato: {exc}")
+
+@app.get("/api/postos-trabalho")
+def list_postos(condominio_id: str | None = None):
+    try:
+        query = get_supabase().table("postos_trabalho").select("*,condominios(nome)").order("nome")
+        if condominio_id:
+            query = query.eq("condominio_id", condominio_id)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar postos de trabalho: {exc}")
+
+@app.post("/api/postos-trabalho", status_code=201)
+def create_posto(payload: PostoCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("status", "ativo")
+    try:
+        result = db.table("postos_trabalho").insert(data).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao criar posto de trabalho: {exc}")
+
+@app.put("/api/postos-trabalho/{posto_id}")
+def update_posto(posto_id: str, payload: PostoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("postos_trabalho").select("id").eq("id", posto_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
+    try:
+        result = db.table("postos_trabalho").update(data).eq("id", posto_id).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar posto de trabalho: {exc}")
+
+@app.get("/api/escalas")
+def list_escalas(data: str | None = None, condominio_id: str | None = None):
+    db = get_supabase()
+    alvo = data or date.today().isoformat()
+    try:
+        postos_query = db.table("postos_trabalho").select("*,condominios(nome)").eq("status", "ativo").order("nome")
+        if condominio_id:
+            postos_query = postos_query.eq("condominio_id", condominio_id)
+        postos = postos_query.execute().data or []
+        posto_ids = [p["id"] for p in postos]
+        escalas_do_dia = []
+        if posto_ids:
+            escalas_do_dia = (
+                db.table("escalas")
+                .select("*,funcionario:funcionarios!escalas_funcionario_id_fkey(nome),substituto:funcionarios!escalas_substituto_id_fkey(nome)")
+                .eq("data", alvo)
+                .in_("posto_id", posto_ids)
+                .execute()
+                .data
+                or []
+            )
+        escala_por_posto = {row["posto_id"]: row for row in escalas_do_dia}
+        items = []
+        for posto in postos:
+            escala = escala_por_posto.get(posto["id"])
+            items.append({"posto": posto, "escala": escala})
+        return {"data": alvo, "items": items}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar escalas: {exc}")
+
+@app.post("/api/escalas")
+def set_escala(payload: EscalaAtribuir):
+    db = get_supabase()
+    data = {
+        "posto_id": payload.posto_id,
+        "data": payload.data.isoformat(),
+        "funcionario_id": payload.funcionario_id,
+        "status": "previsto",
+        "substituto_id": None,
+    }
+    try:
+        result = db.table("escalas").upsert(data, on_conflict="posto_id,data").execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao definir escala: {exc}")
+
+@app.post("/api/escalas/{escala_id}/falta")
+def marcar_falta(escala_id: str, payload: EscalaFalta):
+    db = get_supabase()
+    existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Escala nao encontrada.")
+    try:
+        result = (
+            db.table("escalas")
+            .update({"status": "falta", "observacao": payload.motivo})
+            .eq("id", escala_id)
+            .execute()
+        )
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao marcar falta: {exc}")
+
+@app.post("/api/escalas/{escala_id}/substituir")
+def substituir_escala(escala_id: str, payload: EscalaSubstituir):
+    db = get_supabase()
+    existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Escala nao encontrada.")
+    try:
+        result = (
+            db.table("escalas")
+            .update({"status": "substituido", "substituto_id": payload.substituto_id})
+            .eq("id", escala_id)
+            .execute()
+        )
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao substituir: {exc}")
 
 @app.get("/api/dashboard")
 def dashboard():
