@@ -203,10 +203,36 @@ def destination_folder_id(drive, employee: dict[str, Any]) -> str:
         return get_or_create_subfolder(drive, employee["nome"], root)
     return get_or_create_subfolder(drive, employee["nome"], role_folder_id(drive, employee["cargo"]))
 
+def employee_match_key(name: str) -> str:
+    # Remove acentos, normaliza espacos e ignora maiusculas/minusculas,
+    # para "Ézio Castro" e "ezio  castro" apontarem para o mesmo funcionario.
+    return normalize_text(name or "").casefold()
+
+def find_employee_by_name(db, name: str) -> dict[str, Any] | None:
+    target = employee_match_key(name)
+    if not target:
+        return None
+    page_size = 1000
+    start = 0
+    while True:
+        result = (
+            db.table("funcionarios")
+            .select("*")
+            .order("id")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        rows = result.data or []
+        for row in rows:
+            if employee_match_key(row.get("nome", "")) == target:
+                return row
+        if len(rows) < page_size:
+            return None
+        start += page_size
+
 def get_or_create_employee(db, name: str, condominium: str | None):
-    result = db.table("funcionarios").select("*").ilike("nome", name).limit(1).execute()
-    if result.data:
-        employee = result.data[0]
+    employee = find_employee_by_name(db, name)
+    if employee:
         if condominium and not employee.get("condominio"):
             db.table("funcionarios").update({"condominio": condominium}).eq("id", employee["id"]).execute()
             employee["condominio"] = condominium
