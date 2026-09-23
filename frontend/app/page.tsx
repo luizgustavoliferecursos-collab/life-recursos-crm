@@ -121,6 +121,9 @@ export default function Home() {
   const [lancamentos, setLancamentos] = useState<any[]>([]);
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
+  const [epis, setEpis] = useState<any[]>([]);
+  const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
+  const [alertas, setAlertas] = useState<any>({total: 0, vencidos: 0, vencendo: 0, items: []});
 
   async function refresh() {
     setError("");
@@ -143,7 +146,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await loadFinanceiro();
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAlertas()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -155,6 +158,24 @@ export default function Home() {
       setLancamentos(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar financeiro.");
+    }
+  }
+
+  async function loadEpis() {
+    try {
+      const r = await api("/api/epis");
+      setEpis(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar EPIs.");
+    }
+  }
+
+  async function loadAlertas() {
+    try {
+      const r = await api("/api/notificacoes");
+      setAlertas(r);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar alertas.");
     }
   }
 
@@ -480,6 +501,26 @@ export default function Home() {
     }
   }
 
+  async function saveEpi(data: Record<string, any>) {
+    const mode = epiModal?.mode;
+    const id = epiModal?.epi?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["funcionario_id", "item", "data_entrega", "data_validade", "termo_assinado_url", "observacao"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.funcionario_id;
+      await api(`/api/epis/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/epis", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setEpiModal(null);
+    await loadEpis();
+    await loadAlertas();
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -494,6 +535,8 @@ export default function Home() {
     ["contratos", "Contratos"],
     ["postos", "Postos & Escalas"],
     ["financeiro", "Financeiro"],
+    ["epis", "EPIs"],
+    ["alertas", "Alertas"],
     ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
   ];
 
@@ -501,7 +544,7 @@ export default function Home() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">LR</span><div><b>LIFE RECURSOS</b><small>Central de operações</small></div></div>
-        <nav>{tabs.map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav>
+        <nav>{tabs.map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}{key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}</button>)}</nav>
         <div className="sidebar-foot"><span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>{me?.nome ? `${me.nome} · ${PAPEL_LABEL[me.papel] || me.papel}` : (health?.status === "ok" ? "Backend online" : "Backend indisponível")}<button onClick={logout}>Sair</button></div>
       </aside>
 
@@ -696,6 +739,44 @@ export default function Home() {
             )}
           </section>
         )}
+        {tab === "epis" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>EPIs entregues</h3><span>{epis.length} registros</span></div>
+              <button className="primary" onClick={() => setEpiModal({mode: "create", epi: {}})}>Novo registro</button>
+            </div>
+            {!epis.length ? <div className="empty">Nenhum EPI registrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Item</th><th>Entrega</th><th>Validade</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {epis.map((e: any) => <tr key={e.id}>
+                  <td>{e.funcionarios?.nome || "—"}</td>
+                  <td>{e.item}</td>
+                  <td>{e.data_entrega || "—"}</td>
+                  <td>{e.data_validade || "—"}</td>
+                  <td><span className={"badge " + (e.status_validade === "vencido" ? "danger" : e.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[e.status_validade] || "—"}</span></td>
+                  <td className="row-actions"><button className="link-btn" onClick={() => setEpiModal({mode: "edit", epi: e})}>Editar</button></td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "alertas" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Central de alertas</h3><span>{alertas.vencidos} vencidos · {alertas.vencendo} vencendo em 30 dias</span></div>
+            </div>
+            <p className="muted" style={{margin: "0 0 14px"}}>Alertas gerados dentro do app (documentos, EPIs, contratos e financeiro). Envio automático por e-mail/WhatsApp ainda não está configurado.</p>
+            {!alertas.items.length ? <div className="empty">Nenhum alerta no momento.</div> : (
+              <div className="results">
+                {alertas.items.map((a: any, i: number) => (
+                  <article key={i} className={"result " + (a.urgencia === "vencido" ? "erro" : "duplicado")}>
+                    <div><b>{a.titulo}</b><span>{a.tipo}</span></div>
+                    <p>{a.detalhe}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
             <div className="panel-head">
@@ -788,6 +869,16 @@ export default function Home() {
           funcionarios={funcionarios}
           onCancel={() => setLancamentoModal(null)}
           onSave={saveLancamento}
+        />
+      )}
+
+      {epiModal && (
+        <EpiModal
+          mode={epiModal.mode}
+          epi={epiModal.epi}
+          funcionarios={funcionarios}
+          onCancel={() => setEpiModal(null)}
+          onSave={saveEpi}
         />
       )}
     </div>
@@ -1252,6 +1343,61 @@ function LancamentoModal({mode, lancamento, condominios, funcionarios, onCancel,
           </label>
           <label>Vencimento<input type="date" value={form.vencimento} onChange={e => setForm(f => ({...f, vencimento: e.target.value}))} /></label>
           <label className="span-2">Descrição<textarea value={form.descricao} onChange={e => setForm(f => ({...f, descricao: e.target.value}))} rows={2} /></label>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; epi: any; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    funcionario_id: epi?.funcionario_id || "",
+    item: epi?.item || "",
+    data_entrega: epi?.data_entrega || new Date().toISOString().slice(0, 10),
+    data_validade: epi?.data_validade || "",
+    termo_assinado_url: epi?.termo_assinado_url || "",
+    observacao: epi?.observacao || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar EPI.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo registro de EPI" : `Editar ${epi?.item || ""}`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Funcionário
+            <select value={form.funcionario_id} onChange={e => setForm(f => ({...f, funcionario_id: e.target.value}))} required disabled={mode === "edit"}>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+          </label>
+          <label>Item<input value={form.item} onChange={e => setForm(f => ({...f, item: e.target.value}))} required placeholder="Colete, capacete, uniforme..." /></label>
+          <label>Data de entrega<input type="date" value={form.data_entrega} onChange={e => setForm(f => ({...f, data_entrega: e.target.value}))} /></label>
+          <label>Validade<input type="date" value={form.data_validade} onChange={e => setForm(f => ({...f, data_validade: e.target.value}))} /></label>
+          <label className="span-2">Termo assinado (link)<input value={form.termo_assinado_url} onChange={e => setForm(f => ({...f, termo_assinado_url: e.target.value}))} placeholder="URL do termo de responsabilidade" /></label>
+          <label className="span-2">Observação<textarea value={form.observacao} onChange={e => setForm(f => ({...f, observacao: e.target.value}))} rows={2} /></label>
         </div>
         {error && <div className="alert error">{error}</div>}
         <div className="modal-actions">

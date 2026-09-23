@@ -685,6 +685,21 @@ class LancamentoPagar(BaseModel):
 class GerarMensalidades(BaseModel):
     mes: str = Field(pattern=r"^\d{4}-\d{2}$")
 
+class EpiCreate(BaseModel):
+    funcionario_id: str
+    item: str = Field(min_length=1)
+    data_entrega: date | None = None
+    data_validade: date | None = None
+    termo_assinado_url: str | None = None
+    observacao: str | None = None
+
+class EpiUpdate(BaseModel):
+    item: str | None = None
+    data_entrega: date | None = None
+    data_validade: date | None = None
+    termo_assinado_url: str | None = None
+    observacao: str | None = None
+
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
     if year is None:
@@ -1263,6 +1278,139 @@ def gerar_mensalidades(payload: GerarMensalidades):
         }).execute()
         criados += 1
     return {"criados": criados, "ja_existentes": ja_existentes, "ignorados_sem_valor": ignorados}
+
+@app.get("/api/epis")
+def list_epis(funcionario_id: str | None = None):
+    try:
+        query = get_supabase().table("epis_entregues").select("*,funcionarios(nome)").order("data_entrega", desc=True)
+        if funcionario_id:
+            query = query.eq("funcionario_id", funcionario_id)
+        rows = with_live_status(query.execute().data or [])
+        return {"items": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar EPIs: {exc}")
+
+@app.post("/api/epis", status_code=201)
+def create_epi(payload: EpiCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("data_entrega", date.today().isoformat())
+    try:
+        result = db.table("epis_entregues").insert(data).execute()
+        return with_live_status(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao registrar EPI: {exc}")
+
+@app.put("/api/epis/{epi_id}")
+def update_epi(epi_id: str, payload: EpiUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("epis_entregues").select("id").eq("id", epi_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Registro de EPI nao encontrado.")
+    try:
+        result = db.table("epis_entregues").update(data).eq("id", epi_id).execute()
+        return with_live_status(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar EPI: {exc}")
+
+@app.get("/api/notificacoes")
+def notificacoes():
+    # Central de alertas: agrega, em uma unica lista ordenada por urgencia, tudo
+    # que precisa de atencao (documentos, EPIs, contratos, financeiro). Nao envia
+    # email/WhatsApp (precisaria de um provedor externo configurado) - e o
+    # equivalente "in-app" enquanto isso nao existe.
+    db = get_supabase()
+    alertas = []
+    hoje = date.today()
+    limite = hoje + timedelta(days=VENCENDO_EM_DIAS)
+
+    docs = with_live_status(
+        db.table("documentos").select("tipo_documento,data_validade,funcionarios(nome)").execute().data or []
+    )
+    for row in docs:
+        if row["status_validade"] not in ("vencido", "vencendo"):
+            continue
+        nome_func = (row.get("funcionarios") or {}).get("nome") or "Funcionario desconhecido"
+        alertas.append({
+            "tipo": "documento",
+            "urgencia": row["status_validade"],
+            "titulo": f"{row.get('tipo_documento') or 'Documento'} de {nome_func}",
+            "detalhe": f"Vence em {row.get('data_validade')}" if row.get("data_validade") else "Vencido",
+            "data": row.get("data_validade"),
+        })
+
+    epis = with_live_status(
+        db.table("epis_entregues").select("item,data_validade,funcionarios(nome)").execute().data or []
+    )
+    for row in epis:
+        if row["status_validade"] not in ("vencido", "vencendo"):
+            continue
+        nome_func = (row.get("funcionarios") or {}).get("nome") or "Funcionario desconhecido"
+        alertas.append({
+            "tipo": "epi",
+            "urgencia": row["status_validade"],
+            "titulo": f"{row.get('item')} de {nome_func}",
+            "detalhe": f"Vence em {row.get('data_validade')}" if row.get("data_validade") else "Vencido",
+            "data": row.get("data_validade"),
+        })
+
+    contratos = (
+        db.table("contratos_condominio")
+        .select("objeto,data_fim,data_renovacao,condominios(nome)")
+        .eq("status", "ativo")
+        .execute()
+        .data
+        or []
+    )
+    for row in contratos:
+        alvo = row.get("data_renovacao") or row.get("data_fim")
+        if not alvo:
+            continue
+        try:
+            alvo_data = date.fromisoformat(str(alvo)[:10])
+        except ValueError:
+            continue
+        if alvo_data > limite:
+            continue
+        nome_cond = (row.get("condominios") or {}).get("nome") or "Condominio desconhecido"
+        alertas.append({
+            "tipo": "contrato",
+            "urgencia": "vencido" if alvo_data < hoje else "vencendo",
+            "titulo": f"Contrato com {nome_cond}",
+            "detalhe": (row.get("objeto") or "Renovacao/vigencia") + f" — {alvo_data.isoformat()}",
+            "data": alvo_data.isoformat(),
+        })
+
+    financeiro = with_live_status_financeiro(
+        db.table("financeiro_lancamentos")
+        .select("tipo,valor,status,vencimento,categoria,condominios(nome),funcionarios(nome)")
+        .execute()
+        .data
+        or []
+    )
+    for row in financeiro:
+        if row["status_calculado"] != "atrasado":
+            continue
+        quem = (row.get("condominios") or {}).get("nome") or (row.get("funcionarios") or {}).get("nome") or "—"
+        alertas.append({
+            "tipo": "financeiro",
+            "urgencia": "vencido",
+            "titulo": f"{'Receita' if row['tipo'] == 'receita' else 'Despesa'} atrasada — {quem}",
+            "detalhe": f"{row.get('categoria') or 'Lancamento'}: R$ {row.get('valor')}",
+            "data": row.get("vencimento"),
+        })
+
+    ordem_urgencia = {"vencido": 0, "vencendo": 1}
+    alertas.sort(key=lambda a: (ordem_urgencia.get(a["urgencia"], 2), a.get("data") or ""))
+    return {
+        "total": len(alertas),
+        "vencidos": sum(1 for a in alertas if a["urgencia"] == "vencido"),
+        "vencendo": sum(1 for a in alertas if a["urgencia"] == "vencendo"),
+        "items": alertas,
+    }
 
 @app.get("/api/dashboard")
 def dashboard():
