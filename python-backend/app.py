@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import anthropic
@@ -29,6 +29,14 @@ VALID_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 VALID_ROLES = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff"]
 VALID_CARGOS = VALID_ROLES + ["Pendente"]
 VALID_TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"]
+# Dias de validade por tipo de documento. Tipos fora daqui ficam "nao_aplicavel"
+# (contrato, folha de ponto, documento generico nao tem vencimento automatico).
+DOCUMENT_VALIDITY_DAYS = {
+    "ASO": 365,                    # exame ocupacional, renovacao anual
+    "CertificadoEPI": 365,         # ficha/termo de entrega de EPI, revisado anualmente
+    "CertificadoQualificacao": 730,  # curso de vigilante e similares, reciclagem a cada 2 anos
+}
+VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
 FOLDER_TO_ROLE = {
     "ASG": "ASG",
     "Diarista": "Diarista",
@@ -120,6 +128,40 @@ def normalize_text(text: str) -> str:
 def safe_filename_piece(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "", normalize_text(text).replace(" ", "")) or "Documento"
 
+def compute_data_validade(doc_type: str, data_emissao: str | None, ano: Any) -> date | None:
+    days = DOCUMENT_VALIDITY_DAYS.get(doc_type)
+    if not days:
+        return None
+    base = None
+    if data_emissao:
+        try:
+            base = date.fromisoformat(str(data_emissao)[:10])
+        except ValueError:
+            base = None
+    if base is None and ano:
+        try:
+            base = date(int(ano), 1, 1)
+        except (TypeError, ValueError):
+            base = None
+    if base is None:
+        return None
+    return base + timedelta(days=days)
+
+def compute_status_validade(data_validade: Any) -> str:
+    if not data_validade:
+        return "nao_aplicavel"
+    if isinstance(data_validade, str):
+        try:
+            data_validade = date.fromisoformat(data_validade[:10])
+        except ValueError:
+            return "nao_aplicavel"
+    today = date.today()
+    if data_validade < today:
+        return "vencido"
+    if data_validade <= today + timedelta(days=VENCENDO_EM_DIAS):
+        return "vencendo"
+    return "valido"
+
 def image_to_pdf(data: bytes) -> bytes:
     with Image.open(io.BytesIO(data)) as image:
         if image.mode not in ("RGB", "L"):
@@ -139,7 +181,8 @@ Responda APENAS com JSON valido, sem markdown e sem texto adicional:
   "tipo_documento": "...",
   "nome_funcionario": "...",
   "ano": 2026,
-  "condominio": "..."
+  "condominio": "...",
+  "data_emissao": "2026-01-15"
 }
 
 Regras:
@@ -147,6 +190,7 @@ Regras:
 - nome_funcionario: nome completo como aparece no documento, com capitalizacao normal. Se nao houver confianca, use null.
 - ano: ano principal do documento; se desconhecido, use null.
 - condominio: nome do condominio/local de trabalho se constar; se nao, use null.
+- data_emissao: data de emissao/realizacao do documento (formato YYYY-MM-DD), a data mais relevante para calcular validade (ex.: data do exame no ASO, data de assinatura do termo de EPI, data de conclusao do curso). Se nao houver data explicita no documento, use null.
 """
     response = client.messages.create(
         model=env("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929"),
@@ -500,6 +544,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     doc_type = info.get("tipo_documento") or "Documento"
     year = info.get("ano")
     condominium = info.get("condominio")
+    data_validade = compute_data_validade(doc_type, info.get("data_emissao"), year)
     employee = get_or_create_employee(db, employee_name, condominium)
 
     target_name = f"{safe_filename_piece(doc_type)}_{safe_filename_piece(employee['nome'])}_{year or 'SemAno'}.pdf"
@@ -522,15 +567,18 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
     drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
 
+    doc_record: dict[str, Any] = {
+        "funcionario_id": employee["id"],
+        "tipo_documento": doc_type,
+        "ano": year,
+        "arquivo_nome": target_name,
+        "arquivo_drive_url": drive_url,
+        "origem": "automacao",
+    }
+    if data_validade:
+        doc_record["data_validade"] = data_validade.isoformat()
     try:
-        db.table("documentos").insert({
-            "funcionario_id": employee["id"],
-            "tipo_documento": doc_type,
-            "ano": year,
-            "arquivo_nome": target_name,
-            "arquivo_drive_url": drive_url,
-            "origem": "automacao",
-        }).execute()
+        db.table("documentos").insert(doc_record).execute()
     except Exception:
         try:
             drive.files().delete(fileId=uploaded["id"]).execute()
@@ -547,6 +595,8 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "arquivo_nome": target_name,
         "arquivo_drive_url": drive_url,
         "checksum": checksum,
+        "data_validade": data_validade.isoformat() if data_validade else None,
+        "status_validade": compute_status_validade(data_validade),
     }
 
 @app.get("/health")
@@ -662,12 +712,20 @@ def reactivate_employee(funcionario_id: str):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao reativar funcionario: {exc}")
 
+def with_live_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # status_validade e sempre recalculado na leitura a partir de data_validade,
+    # para nao ficar desatualizado (um documento "valido" vira "vencendo" e depois
+    # "vencido" so pelo passar do tempo, sem precisar de nenhum job/cron).
+    for row in rows:
+        row["status_validade"] = compute_status_validade(row.get("data_validade"))
+    return rows
+
 @app.get("/api/documentos")
 def documents(limit: int = 100):
     try:
         limit = max(1, min(limit, 500))
         result = get_supabase().table("documentos").select("*,funcionarios(nome,cargo,condominio)").order("id", desc=True).limit(limit).execute()
-        return {"items": result.data or []}
+        return {"items": with_live_status(result.data or [])}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar documentos: {exc}")
 
@@ -769,15 +827,24 @@ def dashboard():
         db = get_supabase()
         employees_rows = db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
         docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio)").order("id", desc=True).limit(8).execute().data or []
+        with_live_status(docs_rows)
+        all_docs = with_live_status(
+            db.table("documentos").select("id,tipo_documento,ano,data_validade,funcionarios(nome,cargo,condominio)").execute().data or []
+        )
+        vencendo_ou_vencido = [row for row in all_docs if row["status_validade"] in ("vencendo", "vencido")]
+        vencendo_ou_vencido.sort(key=lambda row: row.get("data_validade") or "")
         condominiums_count = len(db.table("condominios").select("id").execute().data or [])
         pending = [row for row in employees_rows if row.get("cargo") == "Pendente"]
         return {
             "funcionarios": len(employees_rows),
-            "documentos": len((db.table("documentos").select("id").execute().data or [])),
+            "documentos": len(all_docs),
             "condominios": condominiums_count,
             "aguardando_cargo": len(pending),
+            "vencidos": sum(1 for row in all_docs if row["status_validade"] == "vencido"),
+            "vencendo": sum(1 for row in all_docs if row["status_validade"] == "vencendo"),
             "recentes": docs_rows,
             "pendencias": pending[:10],
+            "vencimentos": vencendo_ou_vencido[:10],
         }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao montar dashboard: {exc}")

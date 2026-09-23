@@ -7,8 +7,18 @@ type Dashboard = {
   documentos: number;
   condominios: number;
   aguardando_cargo: number;
+  vencidos: number;
+  vencendo: number;
   recentes: any[];
   pendencias: any[];
+  vencimentos: any[];
+};
+
+const STATUS_VALIDADE_LABEL: Record<string, string> = {
+  valido: "Válido",
+  vencendo: "Vencendo",
+  vencido: "Vencido",
+  nao_aplicavel: "—",
 };
 
 const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -328,11 +338,18 @@ export default function Home() {
               <article><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
               <article><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
               <article><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
+              <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
             </section>
             <section className="grid-two">
               <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
               <div className="panel"><div className="panel-head"><h3>Pendências</h3><span>Aguardando cargo</span></div><DataTable rows={dashboard?.pendencias || []} type="employees" /></div>
             </section>
+            {!!dashboard?.vencimentos?.length && (
+              <section className="panel">
+                <div className="panel-head"><h3>Documentos vencidos ou vencendo</h3><span>Próximos 30 dias</span></div>
+                <DataTable rows={dashboard.vencimentos} type="docs" />
+              </section>
+            )}
           </>
         )}
 
@@ -473,7 +490,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || "—"}</td><td>{row.ano || "—"}</td><td><span className="badge">Registrado</span></td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || "—"}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td></>
   }</tr>)}</tbody></table></div>;
 }
 
