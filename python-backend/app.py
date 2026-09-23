@@ -1412,6 +1412,84 @@ def notificacoes():
         "items": alertas,
     }
 
+@app.get("/api/relatorios")
+def relatorios():
+    db = get_supabase()
+    hoje = date.today()
+
+    inicio_mes, fim_mes = month_bounds(hoje.strftime("%Y-%m"))
+    condominios_rows = db.table("condominios").select("id,nome").eq("status", "ativo").execute().data or []
+    contratos_rows = db.table("contratos_condominio").select("condominio_id,valor_mensal").eq("status", "ativo").execute().data or []
+    lancamentos_mes = (
+        db.table("financeiro_lancamentos")
+        .select("condominio_id,tipo,valor,vencimento")
+        .gte("vencimento", inicio_mes.isoformat())
+        .lt("vencimento", fim_mes.isoformat())
+        .execute()
+        .data
+        or []
+    )
+
+    previsto_por_cond: dict[str, float] = {}
+    for contrato in contratos_rows:
+        cid = contrato.get("condominio_id")
+        if cid:
+            previsto_por_cond[cid] = previsto_por_cond.get(cid, 0) + float(contrato.get("valor_mensal") or 0)
+    faturado_por_cond: dict[str, float] = {}
+    for lancamento in lancamentos_mes:
+        if lancamento.get("tipo") != "receita":
+            continue
+        cid = lancamento.get("condominio_id")
+        if cid:
+            faturado_por_cond[cid] = faturado_por_cond.get(cid, 0) + float(lancamento.get("valor") or 0)
+
+    faturamento = [
+        {
+            "condominio_id": row["id"],
+            "condominio": row["nome"],
+            "previsto_mensal": previsto_por_cond.get(row["id"], 0),
+            "faturado_mes": faturado_por_cond.get(row["id"], 0),
+        }
+        for row in condominios_rows
+    ]
+    faturamento.sort(key=lambda row: -row["previsto_mensal"])
+
+    limite_turnover = hoje - timedelta(days=90)
+    funcionarios_rows = db.table("funcionarios").select("status,data_desligamento").execute().data or []
+    ativos = sum(1 for row in funcionarios_rows if row.get("status") != "inativo")
+    desligados_periodo = 0
+    for row in funcionarios_rows:
+        if row.get("status") != "inativo" or not row.get("data_desligamento"):
+            continue
+        try:
+            desligado_em = date.fromisoformat(str(row["data_desligamento"])[:10])
+        except ValueError:
+            continue
+        if desligado_em >= limite_turnover:
+            desligados_periodo += 1
+    base_turnover = ativos + desligados_periodo
+    turnover_pct = round((desligados_periodo / base_turnover * 100), 1) if base_turnover else 0.0
+
+    limite_absenteismo = hoje - timedelta(days=30)
+    escalas_periodo = (
+        db.table("escalas")
+        .select("status")
+        .gte("data", limite_absenteismo.isoformat())
+        .lte("data", hoje.isoformat())
+        .execute()
+        .data
+        or []
+    )
+    total_escalas = len(escalas_periodo)
+    faltas = sum(1 for row in escalas_periodo if row.get("status") == "falta")
+    absenteismo_pct = round((faltas / total_escalas * 100), 1) if total_escalas else 0.0
+
+    return {
+        "faturamento_por_condominio": faturamento,
+        "turnover": {"desligados_periodo": desligados_periodo, "ativos": ativos, "taxa_pct": turnover_pct},
+        "absenteismo": {"faltas_periodo": faltas, "total_escalas_periodo": total_escalas, "taxa_pct": absenteismo_pct},
+    }
+
 @app.get("/api/dashboard")
 def dashboard():
     try:

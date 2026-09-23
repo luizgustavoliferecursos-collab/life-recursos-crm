@@ -53,6 +53,23 @@ function formatMoney(value: any) {
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
 }
 
+function downloadCsv(filename: string, rows: any[], columns: {key: string; label: string}[]) {
+  const header = columns.map(c => c.label).join(";");
+  const lines = rows.map(row => columns.map(c => {
+    const value = row[c.key];
+    const text = value === null || value === undefined ? "" : String(value);
+    return `"${text.replace(/"/g, '""')}"`;
+  }).join(";"));
+  const csv = [header, ...lines].join("\n");
+  const blob = new Blob(["﻿" + csv], {type: "text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea" | "datalist"; options?: string[]}[] = [
   {key: "nome", label: "Nome completo"},
   {key: "cargo", label: "Cargo", kind: "select", options: CARGOS},
@@ -124,6 +141,7 @@ export default function Home() {
   const [epis, setEpis] = useState<any[]>([]);
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
   const [alertas, setAlertas] = useState<any>({total: 0, vencidos: 0, vencendo: 0, items: []});
+  const [relatorios, setRelatorios] = useState<any>({faturamento_por_condominio: [], turnover: {}, absenteismo: {}});
 
   async function refresh() {
     setError("");
@@ -146,7 +164,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAlertas()]);
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAlertas(), loadRelatorios()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -176,6 +194,15 @@ export default function Home() {
       setAlertas(r);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar alertas.");
+    }
+  }
+
+  async function loadRelatorios() {
+    try {
+      const r = await api("/api/relatorios");
+      setRelatorios(r);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar relatórios.");
     }
   }
 
@@ -526,7 +553,8 @@ export default function Home() {
     window.location.href = "/login";
   }
 
-  const tabs = [
+  const isSindico = me?.papel === "sindico";
+  const tabs = isSindico ? [["meu-condominio", "Meu condomínio"]] : [
     ["visao", "Visão geral"],
     ["processar", "Processar documentos"],
     ["funcionarios", "Funcionários"],
@@ -536,9 +564,14 @@ export default function Home() {
     ["postos", "Postos & Escalas"],
     ["financeiro", "Financeiro"],
     ["epis", "EPIs"],
+    ["relatorios", "Relatórios"],
     ["alertas", "Alertas"],
     ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
   ];
+
+  useEffect(() => {
+    if (isSindico && tab !== "meu-condominio") setTab("meu-condominio");
+  }, [isSindico]);
 
   return (
     <div className="app-shell">
@@ -776,6 +809,54 @@ export default function Home() {
               </div>
             )}
           </section>
+        )}
+        {tab === "relatorios" && (
+          <>
+            <section className="stats">
+              <article><span>Turnover (90 dias)</span><strong>{relatorios.turnover?.taxa_pct ?? 0}%</strong><small>{relatorios.turnover?.desligados_periodo ?? 0} desligados · {relatorios.turnover?.ativos ?? 0} ativos</small></article>
+              <article><span>Absenteísmo (30 dias)</span><strong>{relatorios.absenteismo?.taxa_pct ?? 0}%</strong><small>{relatorios.absenteismo?.faltas_periodo ?? 0} faltas de {relatorios.absenteismo?.total_escalas_periodo ?? 0} escalas</small></article>
+            </section>
+            <section className="panel">
+              <div className="panel-head"><h3>Faturamento por condomínio</h3><span>Mês atual</span></div>
+              {!relatorios.faturamento_por_condominio?.length ? <div className="empty">Sem contratos ativos.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Condomínio</th><th>Previsto mensal</th><th>Faturado este mês</th></tr></thead><tbody>
+                  {relatorios.faturamento_por_condominio.map((r: any) => <tr key={r.condominio_id}>
+                    <td>{r.condominio}</td>
+                    <td>{formatMoney(r.previsto_mensal)}</td>
+                    <td>{formatMoney(r.faturado_mes)}</td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+            <section className="panel">
+              <div className="panel-head"><h3>Exportar dados</h3><span>CSV, abre direto no Excel/Sheets</span></div>
+              <div className="row-actions">
+                <button onClick={() => downloadCsv("funcionarios.csv", funcionarios, [
+                  {key: "nome", label: "Nome"}, {key: "cargo", label: "Cargo"}, {key: "condominio", label: "Condomínio"},
+                  {key: "status", label: "Status"}, {key: "cpf", label: "CPF"}, {key: "telefone", label: "Telefone"},
+                  {key: "data_admissao", label: "Admissão"},
+                ])}>Exportar funcionários</button>
+                <button onClick={() => downloadCsv("documentos.csv", documentos, [
+                  {key: "tipo_documento", label: "Tipo"}, {key: "ano", label: "Ano"},
+                  {key: "data_validade", label: "Validade"}, {key: "status_validade", label: "Status"},
+                ])}>Exportar documentos</button>
+                <button onClick={() => downloadCsv("financeiro.csv", lancamentos, [
+                  {key: "tipo", label: "Tipo"}, {key: "categoria", label: "Categoria"}, {key: "valor", label: "Valor"},
+                  {key: "vencimento", label: "Vencimento"}, {key: "status_calculado", label: "Status"},
+                ])}>Exportar financeiro</button>
+              </div>
+            </section>
+          </>
+        )}
+        {tab === "meu-condominio" && isSindico && (
+          <MeuCondominio
+            me={me}
+            condominios={condominios}
+            contratos={contratos}
+            postos={postos}
+            escalas={escalas}
+            lancamentos={lancamentos}
+          />
         )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
@@ -1406,5 +1487,72 @@ function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" |
         </div>
       </form>
     </div>
+  );
+}
+
+function MeuCondominio({me, condominios, contratos, postos, escalas, lancamentos}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalas: any[]; lancamentos: any[]}) {
+  const condominio = condominios.find((c: any) => c.id === me?.condominio_id);
+  const meusContratos = contratos.filter((c: any) => c.condominio_id === me?.condominio_id);
+  const meusPostos = postos.filter((p: any) => p.condominio_id === me?.condominio_id);
+  const meuFinanceiro = lancamentos.filter((l: any) => l.condominio_id === me?.condominio_id);
+  const escalaPorPosto = (postoId: string) => escalas.find((e: any) => e.posto?.id === postoId)?.escala;
+
+  if (!condominio) {
+    return <section className="panel"><div className="empty">Nenhum condomínio vinculado a este usuário ainda. Peça para um administrador configurar.</div></section>;
+  }
+
+  return (
+    <>
+      <section className="hero">
+        <div>
+          <p className="eyebrow">SEU CONDOMÍNIO</p>
+          <h2>{condominio.nome}</h2>
+          <p>{condominio.endereco || "Endereço não cadastrado"}{condominio.cidade ? ` · ${condominio.cidade}` : ""}</p>
+        </div>
+      </section>
+      <section className="grid-two">
+        <div className="panel">
+          <div className="panel-head"><h3>Contrato vigente</h3></div>
+          {!meusContratos.length ? <div className="empty">Nenhum contrato cadastrado.</div> : (
+            <div className="results">
+              {meusContratos.map((c: any) => (
+                <article key={c.id} className="result">
+                  <div><b>{c.objeto || "Contrato"}</b><span>{c.status === "encerrado" ? "Encerrado" : "Ativo"}</span></div>
+                  <p>{formatMoney(c.valor_mensal)}/mês · vigência {[c.data_inicio, c.data_fim].filter(Boolean).join(" a ") || "—"}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-head"><h3>Postos de trabalho</h3><span>{meusPostos.length}</span></div>
+          {!meusPostos.length ? <div className="empty">Nenhum posto cadastrado.</div> : (
+            <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Cargo</th><th>Turno</th><th>Hoje</th></tr></thead><tbody>
+              {meusPostos.map((p: any) => (
+                <tr key={p.id}>
+                  <td>{p.nome}</td><td>{p.cargo}</td><td>{p.turno || "—"}</td>
+                  <td>{escalaPorPosto(p.id)?.funcionario?.nome || "Vago"}</td>
+                </tr>
+              ))}
+            </tbody></table></div>
+          )}
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head"><h3>Financeiro</h3><span>{meuFinanceiro.length} lançamentos</span></div>
+        {!meuFinanceiro.length ? <div className="empty">Nenhum lançamento.</div> : (
+          <div className="table-wrap"><table><thead><tr><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th></tr></thead><tbody>
+            {meuFinanceiro.map((l: any) => (
+              <tr key={l.id}>
+                <td>{l.categoria || l.descricao || "—"}</td>
+                <td>{formatMoney(l.valor)}</td>
+                <td>{l.vencimento || "—"}</td>
+                <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
+              </tr>
+            ))}
+          </tbody></table></div>
+        )}
+      </section>
+    </>
   );
 }
