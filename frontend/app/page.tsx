@@ -15,6 +15,14 @@ const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
+const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"];
+const PAPEL_LABEL: Record<string, string> = {
+  admin: "Administrador",
+  rh: "RH",
+  financeiro: "Financeiro",
+  operacional: "Operacional",
+  sindico: "Síndico",
+};
 
 const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea" | "datalist"; options?: string[]}[] = [
   {key: "nome", label: "Nome completo"},
@@ -72,6 +80,9 @@ export default function Home() {
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
+  const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
+  const [usuarios, setUsuarios] = useState<any[]>([]);
+  const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
 
   async function refresh() {
     setError("");
@@ -95,7 +106,23 @@ export default function Home() {
     }
   }
 
-  useEffect(() => { refresh(); }, []);
+  async function loadUsuarios() {
+    try {
+      const u = await api("/api/usuarios");
+      setUsuarios(u.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar usuários.");
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    fetch("/api/auth/me").then(r => r.ok ? r.json() : null).then(setMe).catch(() => setMe(null));
+  }, []);
+
+  useEffect(() => {
+    if (me?.papel === "admin") loadUsuarios();
+  }, [me?.papel]);
 
   const filteredEmployees = useMemo(() => funcionarios.filter(item =>
     JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
@@ -222,6 +249,47 @@ export default function Home() {
     }
   }
 
+  async function saveUsuario(data: Record<string, any>) {
+    const mode = usuarioModal?.mode;
+    const id = usuarioModal?.usuario?.id;
+    const payload: Record<string, any> = {
+      nome: data.nome,
+      papel: data.papel,
+      condominio_id: data.papel === "sindico" ? (data.condominio_id || null) : null,
+    };
+    if (data.senha) payload.senha = data.senha;
+    if (mode === "edit" && id) {
+      await api(`/api/usuarios/${id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await api("/api/usuarios", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({...payload, login: data.login, senha: data.senha, ativo: true}),
+      });
+    }
+    setUsuarioModal(null);
+    await loadUsuarios();
+  }
+
+  async function toggleUsuarioAtivo(row: any) {
+    const next = !row.ativo;
+    if (!window.confirm(`Confirma ${next ? "reativar" : "desativar"} o usuário "${row.nome}"?`)) return;
+    try {
+      await api(`/api/usuarios/${row.id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ativo: next}),
+      });
+      await loadUsuarios();
+    } catch (e: any) {
+      setError(e.message || "Erro ao atualizar usuário.");
+    }
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -233,6 +301,7 @@ export default function Home() {
     ["funcionarios", "Funcionários"],
     ["documentos", "Documentos"],
     ["condominios", "Condomínios"],
+    ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
   ];
 
   return (
@@ -240,7 +309,7 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">LR</span><div><b>LIFE RECURSOS</b><small>Central de operações</small></div></div>
         <nav>{tabs.map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}</button>)}</nav>
-        <div className="sidebar-foot"><span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>{health?.status === "ok" ? "Backend online" : "Backend indisponível"}<button onClick={logout}>Sair</button></div>
+        <div className="sidebar-foot"><span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>{me?.nome ? `${me.nome} · ${PAPEL_LABEL[me.papel] || me.papel}` : (health?.status === "ok" ? "Backend online" : "Backend indisponível")}<button onClick={logout}>Sair</button></div>
       </aside>
 
       <main className="content">
@@ -310,6 +379,28 @@ export default function Home() {
             />
           </section>
         )}
+        {tab === "usuarios" && me?.papel === "admin" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Usuários</h3><span>{usuarios.length} cadastrados</span></div>
+              <button className="primary" onClick={() => setUsuarioModal({mode: "create", usuario: {}})}>Novo usuário</button>
+            </div>
+            {!usuarios.length ? <div className="empty">Nenhum usuário encontrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Nome</th><th>Login</th><th>Papel</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {usuarios.map(u => <tr key={u.id}>
+                  <td>{u.nome}</td>
+                  <td>{u.login}</td>
+                  <td><span className="badge">{PAPEL_LABEL[u.papel] || u.papel}</span></td>
+                  <td><span className={"badge " + (!u.ativo ? "warn" : "")}>{u.ativo ? "Ativo" : "Desativado"}</span></td>
+                  <td className="row-actions">
+                    <button className="link-btn" onClick={() => setUsuarioModal({mode: "edit", usuario: u})}>Editar</button>
+                    <button className="link-btn" onClick={() => toggleUsuarioAtivo(u)}>{u.ativo ? "Desativar" : "Reativar"}</button>
+                  </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
       </main>
 
       <datalist id="condominios-datalist">
@@ -339,6 +430,16 @@ export default function Home() {
           condominio={condominioModal.condominio}
           onCancel={() => setCondominioModal(null)}
           onSave={saveCondominio}
+        />
+      )}
+
+      {usuarioModal && (
+        <UsuarioModal
+          mode={usuarioModal.mode}
+          usuario={usuarioModal.usuario}
+          condominios={condominios}
+          onCancel={() => setUsuarioModal(null)}
+          onSave={saveUsuario}
         />
       )}
     </div>
@@ -529,6 +630,65 @@ function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" |
             </label>
           ))}
         </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "create" | "edit"; usuario: any; condominios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [nome, setNome] = useState(usuario?.nome || "");
+  const [login, setLogin] = useState(usuario?.login || "");
+  const [senha, setSenha] = useState("");
+  const [papel, setPapel] = useState(usuario?.papel || "operacional");
+  const [condominioId, setCondominioId] = useState(usuario?.condominio_id || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave({nome, login, senha, papel, condominio_id: condominioId});
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar usuário.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card modal-small" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo usuário" : `Editar ${usuario?.nome || ""}`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <label>Nome<input value={nome} onChange={e => setNome(e.target.value)} required /></label>
+        <label>Login<input value={login} onChange={e => setLogin(e.target.value)} required disabled={mode === "edit"} /></label>
+        <label>
+          {mode === "create" ? "Senha" : "Nova senha (deixe em branco para manter)"}
+          <input type="password" value={senha} onChange={e => setSenha(e.target.value)} required={mode === "create"} minLength={6} />
+        </label>
+        <label>
+          Papel
+          <select value={papel} onChange={e => setPapel(e.target.value)}>
+            {PAPEIS.map(p => <option key={p} value={p}>{PAPEL_LABEL[p] || p}</option>)}
+          </select>
+        </label>
+        {papel === "sindico" && (
+          <label>
+            Condomínio
+            <select value={condominioId} onChange={e => setCondominioId(e.target.value)} required>
+              <option value="">—</option>
+              {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+        )}
         {error && <div className="alert error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>

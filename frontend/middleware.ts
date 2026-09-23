@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-async function sha256(value: string) {
-  const data = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
+import { verifySession } from "./app/lib/session";
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -12,15 +7,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const password = process.env.APP_LOGIN_PASSWORD;
   const secret = process.env.AUTH_SECRET;
-  if (!password || !secret) {
+  if (!secret) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  const expected = await sha256(password + ":" + secret);
-  const current = request.cookies.get("life_auth")?.value;
-  if (current !== expected) {
+  const cookie = request.cookies.get("life_auth")?.value;
+  const session = await verifySession(cookie, secret);
+  if (!session) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
   return NextResponse.next();

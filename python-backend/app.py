@@ -1,9 +1,11 @@
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
 import re
+import secrets
 import unicodedata
 from datetime import date
 from typing import Any
@@ -395,6 +397,62 @@ class CondominioUpdate(BaseModel):
             raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
         return value
 
+VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"]
+PBKDF2_ITERATIONS = 100_000
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, iterations, salt_hex, hash_hex = stored.split("$")
+        if scheme != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations)
+        )
+        return hmac.compare_digest(digest.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+def public_user(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key != "senha_hash"}
+
+class LoginRequest(BaseModel):
+    login: str = Field(min_length=1)
+    senha: str = Field(min_length=1)
+
+class UsuarioCreate(BaseModel):
+    nome: str = Field(min_length=1)
+    login: str = Field(min_length=1)
+    senha: str = Field(min_length=6)
+    papel: str
+    condominio_id: str | None = None
+    ativo: bool = True
+
+    @field_validator("papel")
+    @classmethod
+    def valida_papel(cls, value: str) -> str:
+        if value not in VALID_PAPEIS:
+            raise ValueError(f"Papel invalido. Use um de: {', '.join(VALID_PAPEIS)}")
+        return value
+
+class UsuarioUpdate(BaseModel):
+    nome: str | None = None
+    papel: str | None = None
+    condominio_id: str | None = None
+    ativo: bool | None = None
+    senha: str | None = Field(default=None, min_length=6)
+
+    @field_validator("papel")
+    @classmethod
+    def valida_papel(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_PAPEIS:
+            raise ValueError(f"Papel invalido. Use um de: {', '.join(VALID_PAPEIS)}")
+        return value
+
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
     if year is None:
@@ -652,6 +710,58 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
         if "condominios_nome_key" in message or "duplicate key" in message.lower():
             raise HTTPException(status_code=409, detail="Ja existe um condominio com este nome.")
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar condominio: {exc}")
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest):
+    db = get_supabase()
+    result = db.table("usuarios").select("*").eq("login", payload.login).limit(1).execute()
+    if not result.data:
+        raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
+    user = result.data[0]
+    if not user.get("ativo", True):
+        raise HTTPException(status_code=403, detail="Usuario desativado.")
+    if not verify_password(payload.senha, user.get("senha_hash", "")):
+        raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
+    return public_user(user)
+
+@app.get("/api/usuarios")
+def list_users():
+    try:
+        result = get_supabase().table("usuarios").select("*").order("nome").execute()
+        return {"items": [public_user(row) for row in (result.data or [])]}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar usuarios: {exc}")
+
+@app.post("/api/usuarios", status_code=201)
+def create_user(payload: UsuarioCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude={"senha"}, exclude_none=True, mode="json")
+    data["senha_hash"] = hash_password(payload.senha)
+    try:
+        result = db.table("usuarios").insert(data).execute()
+        return public_user(result.data[0])
+    except Exception as exc:
+        message = str(exc)
+        if "usuarios_login_key" in message or "duplicate key" in message.lower():
+            raise HTTPException(status_code=409, detail="Ja existe um usuario com este login.")
+        raise HTTPException(status_code=503, detail=f"Erro ao criar usuario: {exc}")
+
+@app.put("/api/usuarios/{usuario_id}")
+def update_user(usuario_id: str, payload: UsuarioUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude={"senha"}, exclude_unset=True, mode="json")
+    if payload.senha:
+        data["senha_hash"] = hash_password(payload.senha)
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("usuarios").select("id").eq("id", usuario_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
+    try:
+        result = db.table("usuarios").update(data).eq("id", usuario_id).execute()
+        return public_user(result.data[0])
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar usuario: {exc}")
 
 @app.get("/api/dashboard")
 def dashboard():
