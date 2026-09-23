@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 
 type Dashboard = {
   funcionarios: number;
@@ -12,6 +12,29 @@ type Dashboard = {
 };
 
 const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+
+const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
+const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
+
+const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea"; options?: string[]}[] = [
+  {key: "nome", label: "Nome completo"},
+  {key: "cargo", label: "Cargo", kind: "select", options: CARGOS},
+  {key: "condominio", label: "Condomínio"},
+  {key: "cpf", label: "CPF"},
+  {key: "rg", label: "RG"},
+  {key: "data_nascimento", label: "Data de nascimento", type: "date"},
+  {key: "telefone", label: "Telefone"},
+  {key: "endereco", label: "Endereço", kind: "textarea"},
+  {key: "contato_emergencia_nome", label: "Contato de emergência (nome)"},
+  {key: "contato_emergencia_telefone", label: "Contato de emergência (telefone)"},
+  {key: "tipo_contrato", label: "Tipo de contrato", kind: "select", options: TIPOS_CONTRATO},
+  {key: "salario_base", label: "Salário base (R$)", type: "number"},
+  {key: "data_admissao", label: "Data de admissão", type: "date"},
+  {key: "banco", label: "Banco"},
+  {key: "agencia", label: "Agência"},
+  {key: "conta", label: "Conta"},
+  {key: "chave_pix", label: "Chave PIX"},
+];
 
 async function api(path: string, init?: RequestInit) {
   if (!API || API.includes("URL_DO_BACKEND")) throw new Error("NEXT_PUBLIC_API_URL ainda não configurada.");
@@ -35,6 +58,8 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [health, setHealth] = useState<any>(null);
   const [drive, setDrive] = useState<any>(null);
+  const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
+  const [dismissModal, setDismissModal] = useState<any | null>(null);
 
   async function refresh() {
     setError("");
@@ -101,6 +126,48 @@ export default function Home() {
     }
   }
 
+  async function saveEmployee(data: Record<string, any>) {
+    const mode = employeeModal?.mode;
+    const id = employeeModal?.employee?.id;
+    const clean: Record<string, any> = {};
+    for (const field of EMPLOYEE_FORM_FIELDS) {
+      const value = data[field.key];
+      if (value === undefined || value === "") continue;
+      clean[field.key] = field.type === "number" ? Number(value) : value;
+    }
+    if (mode === "edit" && id) {
+      await api(`/api/funcionarios/${id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(clean),
+      });
+    } else {
+      await api("/api/funcionarios", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(clean),
+      });
+    }
+    setEmployeeModal(null);
+    await refresh();
+  }
+
+  async function submitDismiss(motivo: string) {
+    if (!dismissModal) return;
+    const isInactive = dismissModal.status === "inativo";
+    if (isInactive) {
+      await api(`/api/funcionarios/${dismissModal.id}/reativar`, {method: "POST"});
+    } else {
+      await api(`/api/funcionarios/${dismissModal.id}/desligar`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({motivo: motivo || null}),
+      });
+    }
+    setDismissModal(null);
+    await refresh();
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -160,15 +227,163 @@ export default function Home() {
           </section>
         )}
 
-        {tab === "funcionarios" && <section className="panel"><div className="panel-head"><h3>Funcionários</h3><span>{filteredEmployees.length} registros</span></div><DataTable rows={filteredEmployees} type="employees" /></section>}
+        {tab === "funcionarios" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Funcionários</h3><span>{filteredEmployees.length} registros</span></div>
+              <button className="primary" onClick={() => setEmployeeModal({mode: "create", employee: {}})}>Novo funcionário</button>
+            </div>
+            <DataTable
+              rows={filteredEmployees}
+              type="employees"
+              onEdit={(row) => setEmployeeModal({mode: "edit", employee: row})}
+              onToggleStatus={(row) => setDismissModal(row)}
+            />
+          </section>
+        )}
         {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" /></section>}
         {tab === "condominios" && <section className="panel"><div className="panel-head"><h3>Condomínios</h3><span>{filteredCondos.length} identificados</span></div><DataTable rows={filteredCondos} type="condos" /></section>}
       </main>
+
+      {employeeModal && (
+        <EmployeeModal
+          mode={employeeModal.mode}
+          employee={employeeModal.employee}
+          onCancel={() => setEmployeeModal(null)}
+          onSave={saveEmployee}
+        />
+      )}
+
+      {dismissModal && (
+        <DismissModal
+          employee={dismissModal}
+          onCancel={() => setDismissModal(null)}
+          onConfirm={submitDismiss}
+        />
+      )}
     </div>
   );
 }
 
-function DataTable({rows, type}: {rows: any[]; type: string}) {
+function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void}) {
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
-  return <div className="table-wrap"><table><thead><tr>{type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th></> : type === "condos" ? <th>Condomínio</th> : <><th>Documento</th><th>Funcionário</th><th>Ano</th><th>Status</th></>}</tr></thead><tbody>{rows.map((row, i) => <tr key={row.id || i}>{type === "employees" ? <><td>{row.nome}</td><td><span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{row.cargo || "—"}</span></td><td>{row.condominio || "—"}</td></> : type === "condos" ? <td>{row.nome}</td> : <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || "—"}</td><td>{row.ano || "—"}</td><td><span className="badge">Registrado</span></td></>}</tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr>{
+    type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
+    type === "condos" ? <th>Condomínio</th> :
+    <><th>Documento</th><th>Funcionário</th><th>Ano</th><th>Status</th></>
+  }</tr></thead><tbody>{rows.map((row, i) => <tr key={row.id || i}>{
+    type === "employees" ? <>
+      <td>{row.nome}</td>
+      <td><span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{row.cargo || "—"}</span></td>
+      <td>{row.condominio || "—"}</td>
+      <td><span className={"badge " + (row.status === "inativo" ? "warn" : "")}>{row.status === "inativo" ? "Desligado" : "Ativo"}</span></td>
+      {onEdit && <td className="row-actions">
+        <button className="link-btn" onClick={() => onEdit(row)}>Editar</button>
+        <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Desligar"}</button>
+      </td>}
+    </> :
+    type === "condos" ? <td>{row.nome}</td> :
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || "—"}</td><td>{row.ano || "—"}</td><td><span className="badge">Registrado</span></td></>
+  }</tr>)}</tbody></table></div>;
+}
+
+function EmployeeModal({mode, employee, onCancel, onSave}: {mode: "create" | "edit"; employee: any; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState<Record<string, any>>(() => {
+    const initial: Record<string, any> = {};
+    for (const field of EMPLOYEE_FORM_FIELDS) initial[field.key] = employee?.[field.key] ?? "";
+    return initial;
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar funcionário.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo funcionário" : `Editar ${employee?.nome || ""}`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          {EMPLOYEE_FORM_FIELDS.map(field => (
+            <label key={field.key} className={field.kind === "textarea" ? "span-2" : undefined}>
+              {field.label}
+              {field.kind === "select" ? (
+                <select value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} required={field.key === "cargo"}>
+                  <option value="">—</option>
+                  {field.options?.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              ) : field.kind === "textarea" ? (
+                <textarea value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} rows={2} />
+              ) : (
+                <input
+                  type={field.type || "text"}
+                  value={form[field.key]}
+                  onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))}
+                  required={field.key === "nome"}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function DismissModal({employee, onCancel, onConfirm}: {employee: any; onCancel: () => void; onConfirm: (motivo: string) => Promise<void>}) {
+  const [motivo, setMotivo] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const isInactive = employee.status === "inativo";
+
+  async function confirm() {
+    setSaving(true);
+    setError("");
+    try {
+      await onConfirm(motivo);
+    } catch (e: any) {
+      setError(e.message || "Erro ao atualizar status.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal-card modal-small" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{isInactive ? "Reativar" : "Desligar"} {employee.nome}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        {!isInactive && (
+          <label>
+            Motivo do desligamento (opcional)
+            <textarea value={motivo} onChange={e => setMotivo(e.target.value)} rows={3} />
+          </label>
+        )}
+        {isInactive && <p className="muted">O funcionário volta para status ativo, sem data de desligamento.</p>}
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" onClick={confirm} disabled={saving}>{saving ? "Salvando..." : "Confirmar"}</button>
+        </div>
+      </div>
+    </div>
+  );
 }

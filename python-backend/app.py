@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unicodedata
+from datetime import date
 from typing import Any
 
 import anthropic
@@ -16,6 +17,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
+from pydantic import BaseModel, Field, field_validator
 from supabase import create_client
 
 APP_NAME = "LIFE Recursos API"
@@ -23,6 +25,8 @@ DRIVE_SCOPE = ["https://www.googleapis.com/auth/drive"]
 VALID_MIME_TYPES = {"application/pdf", "image/jpeg", "image/jpg", "image/png"}
 VALID_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 VALID_ROLES = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff"]
+VALID_CARGOS = VALID_ROLES + ["Pendente"]
+VALID_TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"]
 FOLDER_TO_ROLE = {
     "ASG": "ASG",
     "Diarista": "Diarista",
@@ -55,7 +59,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -245,6 +249,98 @@ def get_or_create_employee(db, name: str, condominium: str | None):
     }).execute()
     return created.data[0]
 
+def only_digits(value: str | None) -> str | None:
+    if value is None:
+        return None
+    digits = re.sub(r"\D", "", value)
+    return digits or None
+
+class FuncionarioCreate(BaseModel):
+    nome: str = Field(min_length=1)
+    cargo: str = "Pendente"
+    condominio: str | None = None
+    cpf: str | None = None
+    rg: str | None = None
+    data_nascimento: date | None = None
+    telefone: str | None = None
+    endereco: str | None = None
+    contato_emergencia_nome: str | None = None
+    contato_emergencia_telefone: str | None = None
+    banco: str | None = None
+    agencia: str | None = None
+    conta: str | None = None
+    chave_pix: str | None = None
+    tipo_contrato: str | None = None
+    salario_base: float | None = None
+    data_admissao: date | None = None
+
+    @field_validator("cargo")
+    @classmethod
+    def valida_cargo(cls, value: str) -> str:
+        if value not in VALID_CARGOS:
+            raise ValueError(f"Cargo invalido. Use um de: {', '.join(VALID_CARGOS)}")
+        return value
+
+    @field_validator("tipo_contrato")
+    @classmethod
+    def valida_tipo_contrato(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_TIPOS_CONTRATO:
+            raise ValueError(f"Tipo de contrato invalido. Use um de: {', '.join(VALID_TIPOS_CONTRATO)}")
+        return value
+
+    @field_validator("cpf")
+    @classmethod
+    def valida_cpf(cls, value: str | None) -> str | None:
+        digits = only_digits(value)
+        if digits and len(digits) != 11:
+            raise ValueError("CPF deve ter 11 digitos.")
+        return digits
+
+class FuncionarioUpdate(BaseModel):
+    nome: str | None = Field(default=None, min_length=1)
+    cargo: str | None = None
+    condominio: str | None = None
+    cpf: str | None = None
+    rg: str | None = None
+    data_nascimento: date | None = None
+    telefone: str | None = None
+    endereco: str | None = None
+    contato_emergencia_nome: str | None = None
+    contato_emergencia_telefone: str | None = None
+    banco: str | None = None
+    agencia: str | None = None
+    conta: str | None = None
+    chave_pix: str | None = None
+    tipo_contrato: str | None = None
+    salario_base: float | None = None
+    data_admissao: date | None = None
+
+    @field_validator("cargo")
+    @classmethod
+    def valida_cargo(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_CARGOS:
+            raise ValueError(f"Cargo invalido. Use um de: {', '.join(VALID_CARGOS)}")
+        return value
+
+    @field_validator("tipo_contrato")
+    @classmethod
+    def valida_tipo_contrato(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_TIPOS_CONTRATO:
+            raise ValueError(f"Tipo de contrato invalido. Use um de: {', '.join(VALID_TIPOS_CONTRATO)}")
+        return value
+
+    @field_validator("cpf")
+    @classmethod
+    def valida_cpf(cls, value: str | None) -> str | None:
+        digits = only_digits(value)
+        if digits and len(digits) != 11:
+            raise ValueError("CPF deve ter 11 digitos.")
+        return digits
+
+class FuncionarioDesligar(BaseModel):
+    motivo: str | None = None
+    data_desligamento: date | None = None
+
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
     if year is None:
@@ -389,6 +485,70 @@ def employees():
         return {"items": result.data or []}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar funcionarios: {exc}")
+
+@app.post("/api/funcionarios", status_code=201)
+def create_employee(payload: FuncionarioCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("status", "ativo")
+    try:
+        result = db.table("funcionarios").insert(data).execute()
+        return result.data[0]
+    except Exception as exc:
+        message = str(exc)
+        if "funcionarios_cpf_key" in message:
+            raise HTTPException(status_code=409, detail="Ja existe um funcionario cadastrado com este CPF.")
+        raise HTTPException(status_code=503, detail=f"Erro ao criar funcionario: {exc}")
+
+@app.put("/api/funcionarios/{funcionario_id}")
+def update_employee(funcionario_id: str, payload: FuncionarioUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+        result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        message = str(exc)
+        if "funcionarios_cpf_key" in message:
+            raise HTTPException(status_code=409, detail="Ja existe um funcionario cadastrado com este CPF.")
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar funcionario: {exc}")
+
+@app.post("/api/funcionarios/{funcionario_id}/desligar")
+def deactivate_employee(funcionario_id: str, payload: FuncionarioDesligar):
+    db = get_supabase()
+    existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+    data = {
+        "status": "inativo",
+        "data_desligamento": (payload.data_desligamento or date.today()).isoformat(),
+        "motivo_desligamento": payload.motivo,
+    }
+    try:
+        result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao desligar funcionario: {exc}")
+
+@app.post("/api/funcionarios/{funcionario_id}/reativar")
+def reactivate_employee(funcionario_id: str):
+    db = get_supabase()
+    existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+    data = {"status": "ativo", "data_desligamento": None, "motivo_desligamento": None}
+    try:
+        result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        return result.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao reativar funcionario: {exc}")
 
 @app.get("/api/documentos")
 def documents(limit: int = 100):
