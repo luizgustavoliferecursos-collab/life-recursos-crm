@@ -16,10 +16,10 @@ const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
 
-const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea"; options?: string[]}[] = [
+const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "select" | "textarea" | "datalist"; options?: string[]}[] = [
   {key: "nome", label: "Nome completo"},
   {key: "cargo", label: "Cargo", kind: "select", options: CARGOS},
-  {key: "condominio", label: "Condomínio"},
+  {key: "condominio", label: "Condomínio", kind: "datalist"},
   {key: "cpf", label: "CPF"},
   {key: "rg", label: "RG"},
   {key: "data_nascimento", label: "Data de nascimento", type: "date"},
@@ -34,6 +34,17 @@ const EMPLOYEE_FORM_FIELDS: {key: string; label: string; type?: string; kind?: "
   {key: "agencia", label: "Agência"},
   {key: "conta", label: "Conta"},
   {key: "chave_pix", label: "Chave PIX"},
+];
+
+const CONDOMINIO_FORM_FIELDS: {key: string; label: string; kind?: "select" | "textarea"; options?: string[]}[] = [
+  {key: "nome", label: "Nome"},
+  {key: "cnpj", label: "CNPJ"},
+  {key: "cidade", label: "Cidade"},
+  {key: "endereco", label: "Endereço", kind: "textarea"},
+  {key: "sindico_nome", label: "Síndico (nome)"},
+  {key: "sindico_telefone", label: "Síndico (telefone)"},
+  {key: "sindico_email", label: "Síndico (e-mail)"},
+  {key: "administradora", label: "Administradora"},
 ];
 
 async function api(path: string, init?: RequestInit) {
@@ -60,6 +71,7 @@ export default function Home() {
   const [drive, setDrive] = useState<any>(null);
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
+  const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
 
   async function refresh() {
     setError("");
@@ -168,6 +180,48 @@ export default function Home() {
     await refresh();
   }
 
+  async function saveCondominio(data: Record<string, any>) {
+    const mode = condominioModal?.mode;
+    const id = condominioModal?.condominio?.id;
+    const clean: Record<string, any> = {};
+    for (const field of CONDOMINIO_FORM_FIELDS) {
+      const value = data[field.key];
+      if (value === undefined || value === "") continue;
+      clean[field.key] = value;
+    }
+    if (mode === "edit" && id) {
+      await api(`/api/condominios/${id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(clean),
+      });
+    } else {
+      await api("/api/condominios", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(clean),
+      });
+    }
+    setCondominioModal(null);
+    await refresh();
+  }
+
+  async function toggleCondominioStatus(row: any) {
+    const next = row.status === "inativo" ? "ativo" : "inativo";
+    const action = next === "inativo" ? "inativar" : "reativar";
+    if (!window.confirm(`Confirma ${action} o condomínio "${row.nome}"?`)) return;
+    try {
+      await api(`/api/condominios/${row.id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status: next}),
+      });
+      await refresh();
+    } catch (e: any) {
+      setError(e.message || "Erro ao atualizar condomínio.");
+    }
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -242,8 +296,25 @@ export default function Home() {
           </section>
         )}
         {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" /></section>}
-        {tab === "condominios" && <section className="panel"><div className="panel-head"><h3>Condomínios</h3><span>{filteredCondos.length} identificados</span></div><DataTable rows={filteredCondos} type="condos" /></section>}
+        {tab === "condominios" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Condomínios</h3><span>{filteredCondos.length} identificados</span></div>
+              <button className="primary" onClick={() => setCondominioModal({mode: "create", condominio: {}})}>Novo condomínio</button>
+            </div>
+            <DataTable
+              rows={filteredCondos}
+              type="condos"
+              onEdit={(row) => setCondominioModal({mode: "edit", condominio: row})}
+              onToggleStatus={toggleCondominioStatus}
+            />
+          </section>
+        )}
       </main>
+
+      <datalist id="condominios-datalist">
+        {condominios.map((c) => <option key={c.id || c.nome} value={c.nome} />)}
+      </datalist>
 
       {employeeModal && (
         <EmployeeModal
@@ -261,6 +332,15 @@ export default function Home() {
           onConfirm={submitDismiss}
         />
       )}
+
+      {condominioModal && (
+        <CondominioModal
+          mode={condominioModal.mode}
+          condominio={condominioModal.condominio}
+          onCancel={() => setCondominioModal(null)}
+          onSave={saveCondominio}
+        />
+      )}
     </div>
   );
 }
@@ -269,7 +349,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
-    type === "condos" ? <th>Condomínio</th> :
+    type === "condos" ? <><th>Condomínio</th><th>Cidade</th><th>Síndico</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
     <><th>Documento</th><th>Funcionário</th><th>Ano</th><th>Status</th></>
   }</tr></thead><tbody>{rows.map((row, i) => <tr key={row.id || i}>{
     type === "employees" ? <>
@@ -282,7 +362,16 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Desligar"}</button>
       </td>}
     </> :
-    type === "condos" ? <td>{row.nome}</td> :
+    type === "condos" ? <>
+      <td>{row.nome}</td>
+      <td>{row.cidade || "—"}</td>
+      <td>{row.sindico_nome || "—"}</td>
+      <td><span className={"badge " + (row.status === "inativo" ? "warn" : "")}>{row.status === "inativo" ? "Inativo" : "Ativo"}</span></td>
+      {onEdit && <td className="row-actions">
+        <button className="link-btn" onClick={() => onEdit(row)}>Editar</button>
+        <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
+      </td>}
+    </> :
     <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || "—"}</td><td>{row.ano || "—"}</td><td><span className="badge">Registrado</span></td></>
   }</tr>)}</tbody></table></div>;
 }
@@ -326,6 +415,13 @@ function EmployeeModal({mode, employee, onCancel, onSave}: {mode: "create" | "ed
                 </select>
               ) : field.kind === "textarea" ? (
                 <textarea value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} rows={2} />
+              ) : field.kind === "datalist" ? (
+                <input
+                  type="text"
+                  list="condominios-datalist"
+                  value={form[field.key]}
+                  onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))}
+                />
               ) : (
                 <input
                   type={field.type || "text"}
@@ -384,6 +480,61 @@ function DismissModal({employee, onCancel, onConfirm}: {employee: any; onCancel:
           <button className="primary" onClick={confirm} disabled={saving}>{saving ? "Salvando..." : "Confirmar"}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" | "edit"; condominio: any; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState<Record<string, any>>(() => {
+    const initial: Record<string, any> = {};
+    for (const field of CONDOMINIO_FORM_FIELDS) initial[field.key] = condominio?.[field.key] ?? "";
+    return initial;
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar condomínio.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo condomínio" : `Editar ${condominio?.nome || ""}`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          {CONDOMINIO_FORM_FIELDS.map(field => (
+            <label key={field.key} className={field.kind === "textarea" ? "span-2" : undefined}>
+              {field.label}
+              {field.kind === "textarea" ? (
+                <textarea value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} rows={2} />
+              ) : (
+                <input
+                  type="text"
+                  value={form[field.key]}
+                  onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))}
+                  required={field.key === "nome"}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
     </div>
   );
 }

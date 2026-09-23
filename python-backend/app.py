@@ -341,6 +341,60 @@ class FuncionarioDesligar(BaseModel):
     motivo: str | None = None
     data_desligamento: date | None = None
 
+VALID_STATUS_CONDOMINIO = ["ativo", "inativo"]
+
+class CondominioCreate(BaseModel):
+    nome: str = Field(min_length=1)
+    cnpj: str | None = None
+    endereco: str | None = None
+    cidade: str | None = None
+    sindico_nome: str | None = None
+    sindico_telefone: str | None = None
+    sindico_email: str | None = None
+    administradora: str | None = None
+    status: str | None = None
+
+    @field_validator("cnpj")
+    @classmethod
+    def valida_cnpj(cls, value: str | None) -> str | None:
+        digits = only_digits(value)
+        if digits and len(digits) != 14:
+            raise ValueError("CNPJ deve ter 14 digitos.")
+        return digits
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_CONDOMINIO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
+        return value
+
+class CondominioUpdate(BaseModel):
+    nome: str | None = Field(default=None, min_length=1)
+    cnpj: str | None = None
+    endereco: str | None = None
+    cidade: str | None = None
+    sindico_nome: str | None = None
+    sindico_telefone: str | None = None
+    sindico_email: str | None = None
+    administradora: str | None = None
+    status: str | None = None
+
+    @field_validator("cnpj")
+    @classmethod
+    def valida_cnpj(cls, value: str | None) -> str | None:
+        digits = only_digits(value)
+        if digits and len(digits) != 14:
+            raise ValueError("CNPJ deve ter 14 digitos.")
+        return digits
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_CONDOMINIO:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
+        return value
+
 def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
     query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
     if year is None:
@@ -562,11 +616,42 @@ def documents(limit: int = 100):
 @app.get("/api/condominios")
 def condominiums():
     try:
-        result = get_supabase().table("funcionarios").select("condominio").execute()
-        names = sorted({row.get("condominio").strip() for row in (result.data or []) if row.get("condominio") and row.get("condominio").strip()})
-        return {"items": [{"nome": name} for name in names]}
+        result = get_supabase().table("condominios").select("*").order("nome").execute()
+        return {"items": result.data or []}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar condominios: {exc}")
+
+@app.post("/api/condominios", status_code=201)
+def create_condominium(payload: CondominioCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    data.setdefault("status", "ativo")
+    try:
+        result = db.table("condominios").insert(data).execute()
+        return result.data[0]
+    except Exception as exc:
+        message = str(exc)
+        if "condominios_nome_key" in message or "duplicate key" in message.lower():
+            raise HTTPException(status_code=409, detail="Ja existe um condominio com este nome.")
+        raise HTTPException(status_code=503, detail=f"Erro ao criar condominio: {exc}")
+
+@app.put("/api/condominios/{condominio_id}")
+def update_condominium(condominio_id: str, payload: CondominioUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    existing = db.table("condominios").select("id").eq("id", condominio_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
+    try:
+        result = db.table("condominios").update(data).eq("id", condominio_id).execute()
+        return result.data[0]
+    except Exception as exc:
+        message = str(exc)
+        if "condominios_nome_key" in message or "duplicate key" in message.lower():
+            raise HTTPException(status_code=409, detail="Ja existe um condominio com este nome.")
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar condominio: {exc}")
 
 @app.get("/api/dashboard")
 def dashboard():
@@ -574,12 +659,12 @@ def dashboard():
         db = get_supabase()
         employees_rows = db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
         docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio)").order("id", desc=True).limit(8).execute().data or []
-        condominiums = {row.get("condominio").strip() for row in employees_rows if row.get("condominio") and row.get("condominio").strip()}
+        condominiums_count = len(db.table("condominios").select("id").execute().data or [])
         pending = [row for row in employees_rows if row.get("cargo") == "Pendente"]
         return {
             "funcionarios": len(employees_rows),
             "documentos": len((db.table("documentos").select("id").execute().data or [])),
-            "condominios": len(condominiums),
+            "condominios": condominiums_count,
             "aguardando_cargo": len(pending),
             "recentes": docs_rows,
             "pendencias": pending[:10],
