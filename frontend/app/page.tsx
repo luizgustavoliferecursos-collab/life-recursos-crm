@@ -53,6 +53,16 @@ function formatMoney(value: any) {
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
 }
 
+// "Hoje" pelo calendario local do navegador, nao UTC: Date().toISOString()
+// converte pra UTC, entao entre 21h e meia-noite no Brasil (UTC-3) mostraria
+// o dia seguinte por engano (escala do dia, EPI, geracao de mensalidade).
+function localDateISO(d: Date = new Date()): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 const ICON_PATHS: Record<string, JSX.Element> = {
   home: <path d="M3 11.5 12 4l9 7.5M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9" />,
   bell: <path d="M6 8a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 12 6 8ZM9.5 17.5a2.5 2.5 0 0 0 5 0" />,
@@ -205,7 +215,7 @@ export default function Home() {
   const [contratoModal, setContratoModal] = useState<{mode: "create" | "edit"; contrato: any} | null>(null);
   const [postos, setPostos] = useState<any[]>([]);
   const [postoModal, setPostoModal] = useState<{mode: "create" | "edit"; posto: any} | null>(null);
-  const [escalaData, setEscalaData] = useState(() => new Date().toISOString().slice(0, 10));
+  const [escalaData, setEscalaData] = useState(() => localDateISO());
   const [escalas, setEscalas] = useState<any[]>([]);
   const [lancamentos, setLancamentos] = useState<any[]>([]);
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
@@ -634,7 +644,7 @@ export default function Home() {
   }
 
   async function gerarMensalidades() {
-    const mes = new Date().toISOString().slice(0, 7);
+    const mes = localDateISO().slice(0, 7);
     const ok = await askConfirm("Gerar cobranças do mês?", {message: `Cria uma cobrança de mensalidade para cada contrato ativo com valor definido, referente a ${mes}.`});
     if (!ok) return;
     try {
@@ -1595,7 +1605,7 @@ function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" |
   const [form, setForm] = useState({
     funcionario_id: epi?.funcionario_id || "",
     item: epi?.item || "",
-    data_entrega: epi?.data_entrega || new Date().toISOString().slice(0, 10),
+    data_entrega: epi?.data_entrega || localDateISO(),
     data_validade: epi?.data_validade || "",
     termo_assinado_url: epi?.termo_assinado_url || "",
     observacao: epi?.observacao || "",

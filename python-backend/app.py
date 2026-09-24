@@ -7,8 +7,9 @@ import os
 import re
 import secrets
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import anthropic
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -37,6 +38,13 @@ DOCUMENT_VALIDITY_DAYS = {
     "CertificadoQualificacao": 730,  # curso de vigilante e similares, reciclagem a cada 2 anos
 }
 VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
+FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+
+def hoje_brasil() -> date:
+    # O servidor roda em UTC; usar date.today() bateria "vencido" ~3h adiantado
+    # todo dia (21h-00h em Brasilia ja e o dia seguinte em UTC).
+    return datetime.now(FUSO_BRASIL).date()
+
 FOLDER_TO_ROLE = {
     "ASG": "ASG",
     "Diarista": "Diarista",
@@ -155,7 +163,7 @@ def compute_status_validade(data_validade: Any) -> str:
             data_validade = date.fromisoformat(data_validade[:10])
         except ValueError:
             return "nao_aplicavel"
-    today = date.today()
+    today = hoje_brasil()
     if data_validade < today:
         return "vencido"
     if data_validade <= today + timedelta(days=VENCENDO_EM_DIAS):
@@ -175,7 +183,7 @@ def compute_status_lancamento(row: dict[str, Any]) -> str:
                 vencimento = date.fromisoformat(vencimento[:10])
             except ValueError:
                 vencimento = None
-        if vencimento and vencimento < date.today():
+        if vencimento and vencimento < hoje_brasil():
             return "atrasado"
     return "pendente"
 
@@ -365,9 +373,11 @@ class FuncionarioCreate(BaseModel):
     @field_validator("cpf")
     @classmethod
     def valida_cpf(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         digits = only_digits(value)
-        if digits and len(digits) != 11:
-            raise ValueError("CPF deve ter 11 digitos.")
+        if not digits or len(digits) != 11:
+            raise ValueError("CPF invalido. Informe 11 digitos.")
         return digits
 
 class FuncionarioUpdate(BaseModel):
@@ -406,9 +416,11 @@ class FuncionarioUpdate(BaseModel):
     @field_validator("cpf")
     @classmethod
     def valida_cpf(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         digits = only_digits(value)
-        if digits and len(digits) != 11:
-            raise ValueError("CPF deve ter 11 digitos.")
+        if not digits or len(digits) != 11:
+            raise ValueError("CPF invalido. Informe 11 digitos.")
         return digits
 
 class FuncionarioDesligar(BaseModel):
@@ -431,9 +443,11 @@ class CondominioCreate(BaseModel):
     @field_validator("cnpj")
     @classmethod
     def valida_cnpj(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         digits = only_digits(value)
-        if digits and len(digits) != 14:
-            raise ValueError("CNPJ deve ter 14 digitos.")
+        if not digits or len(digits) != 14:
+            raise ValueError("CNPJ invalido. Informe 14 digitos.")
         return digits
 
     @field_validator("status")
@@ -457,9 +471,11 @@ class CondominioUpdate(BaseModel):
     @field_validator("cnpj")
     @classmethod
     def valida_cnpj(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         digits = only_digits(value)
-        if digits and len(digits) != 14:
-            raise ValueError("CNPJ deve ter 14 digitos.")
+        if not digits or len(digits) != 14:
+            raise ValueError("CNPJ invalido. Informe 14 digitos.")
         return digits
 
     @field_validator("status")
@@ -888,30 +904,34 @@ def update_employee(funcionario_id: str, payload: FuncionarioUpdate):
 @app.post("/api/funcionarios/{funcionario_id}/desligar")
 def deactivate_employee(funcionario_id: str, payload: FuncionarioDesligar):
     db = get_supabase()
-    existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
-    data = {
-        "status": "inativo",
-        "data_desligamento": (payload.data_desligamento or date.today()).isoformat(),
-        "motivo_desligamento": payload.motivo,
-    }
     try:
+        existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+        data = {
+            "status": "inativo",
+            "data_desligamento": (payload.data_desligamento or hoje_brasil()).isoformat(),
+            "motivo_desligamento": payload.motivo,
+        }
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao desligar funcionario: {exc}")
 
 @app.post("/api/funcionarios/{funcionario_id}/reativar")
 def reactivate_employee(funcionario_id: str):
     db = get_supabase()
-    existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
-    data = {"status": "ativo", "data_desligamento": None, "motivo_desligamento": None}
     try:
+        existing = db.table("funcionarios").select("id").eq("id", funcionario_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+        data = {"status": "ativo", "data_desligamento": None, "motivo_desligamento": None}
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao reativar funcionario: {exc}")
 
@@ -960,12 +980,14 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
     data = payload.model_dump(exclude_unset=True, mode="json")
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("condominios").select("id").eq("id", condominio_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
     try:
+        existing = db.table("condominios").select("id").eq("id", condominio_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
         result = db.table("condominios").update(data).eq("id", condominio_id).execute()
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         message = str(exc)
         if "condominios_nome_key" in message or "duplicate key" in message.lower():
@@ -1015,12 +1037,14 @@ def update_user(usuario_id: str, payload: UsuarioUpdate):
         data["senha_hash"] = hash_password(payload.senha)
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("usuarios").select("id").eq("id", usuario_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
     try:
+        existing = db.table("usuarios").select("id").eq("id", usuario_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
         result = db.table("usuarios").update(data).eq("id", usuario_id).execute()
         return public_user(result.data[0])
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar usuario: {exc}")
 
@@ -1052,12 +1076,14 @@ def update_contrato(contrato_id: str, payload: ContratoUpdate):
     data = payload.model_dump(exclude_unset=True, mode="json")
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("contratos_condominio").select("id").eq("id", contrato_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Contrato nao encontrado.")
     try:
+        existing = db.table("contratos_condominio").select("id").eq("id", contrato_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Contrato nao encontrado.")
         result = db.table("contratos_condominio").update(data).eq("id", contrato_id).execute()
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar contrato: {exc}")
 
@@ -1089,19 +1115,21 @@ def update_posto(posto_id: str, payload: PostoUpdate):
     data = payload.model_dump(exclude_unset=True, mode="json")
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("postos_trabalho").select("id").eq("id", posto_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
     try:
+        existing = db.table("postos_trabalho").select("id").eq("id", posto_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
         result = db.table("postos_trabalho").update(data).eq("id", posto_id).execute()
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar posto de trabalho: {exc}")
 
 @app.get("/api/escalas")
 def list_escalas(data: str | None = None, condominio_id: str | None = None):
     db = get_supabase()
-    alvo = data or date.today().isoformat()
+    alvo = data or hoje_brasil().isoformat()
     try:
         postos_query = db.table("postos_trabalho").select("*,condominios(nome)").eq("status", "ativo").order("nome")
         if condominio_id:
@@ -1147,10 +1175,10 @@ def set_escala(payload: EscalaAtribuir):
 @app.post("/api/escalas/{escala_id}/falta")
 def marcar_falta(escala_id: str, payload: EscalaFalta):
     db = get_supabase()
-    existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Escala nao encontrada.")
     try:
+        existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Escala nao encontrada.")
         result = (
             db.table("escalas")
             .update({"status": "falta", "observacao": payload.motivo})
@@ -1158,16 +1186,18 @@ def marcar_falta(escala_id: str, payload: EscalaFalta):
             .execute()
         )
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao marcar falta: {exc}")
 
 @app.post("/api/escalas/{escala_id}/substituir")
 def substituir_escala(escala_id: str, payload: EscalaSubstituir):
     db = get_supabase()
-    existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Escala nao encontrada.")
     try:
+        existing = db.table("escalas").select("id").eq("id", escala_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Escala nao encontrada.")
         result = (
             db.table("escalas")
             .update({"status": "substituido", "substituto_id": payload.substituto_id})
@@ -1175,6 +1205,8 @@ def substituir_escala(escala_id: str, payload: EscalaSubstituir):
             .execute()
         )
         return result.data[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao substituir: {exc}")
 
@@ -1216,28 +1248,32 @@ def update_financeiro(lancamento_id: str, payload: LancamentoUpdate):
     data = payload.model_dump(exclude_unset=True, mode="json")
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
     try:
+        existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
         return with_live_status_financeiro(result.data)[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar lancamento: {exc}")
 
 @app.post("/api/financeiro/{lancamento_id}/pagar")
 def pagar_financeiro(lancamento_id: str, payload: LancamentoPagar):
     db = get_supabase()
-    existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
-    data = {
-        "status": "pago",
-        "data_pagamento": (payload.data_pagamento or date.today()).isoformat(),
-    }
     try:
+        existing = db.table("financeiro_lancamentos").select("id").eq("id", lancamento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
+        data = {
+            "status": "pago",
+            "data_pagamento": (payload.data_pagamento or hoje_brasil()).isoformat(),
+        }
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
         return with_live_status_financeiro(result.data)[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao marcar pagamento: {exc}")
 
@@ -1258,6 +1294,7 @@ def gerar_mensalidades(payload: GerarMensalidades):
             .select("id")
             .eq("condominio_id", contrato["condominio_id"])
             .eq("origem", "contrato")
+            .eq("tipo", "receita")
             .gte("vencimento", inicio.isoformat())
             .lt("vencimento", fim.isoformat())
             .limit(1)
@@ -1294,7 +1331,7 @@ def list_epis(funcionario_id: str | None = None):
 def create_epi(payload: EpiCreate):
     db = get_supabase()
     data = payload.model_dump(exclude_none=True, mode="json")
-    data.setdefault("data_entrega", date.today().isoformat())
+    data.setdefault("data_entrega", hoje_brasil().isoformat())
     try:
         result = db.table("epis_entregues").insert(data).execute()
         return with_live_status(result.data)[0]
@@ -1307,12 +1344,14 @@ def update_epi(epi_id: str, payload: EpiUpdate):
     data = payload.model_dump(exclude_unset=True, mode="json")
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
-    existing = db.table("epis_entregues").select("id").eq("id", epi_id).limit(1).execute()
-    if not existing.data:
-        raise HTTPException(status_code=404, detail="Registro de EPI nao encontrado.")
     try:
+        existing = db.table("epis_entregues").select("id").eq("id", epi_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Registro de EPI nao encontrado.")
         result = db.table("epis_entregues").update(data).eq("id", epi_id).execute()
         return with_live_status(result.data)[0]
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar EPI: {exc}")
 
@@ -1324,7 +1363,7 @@ def notificacoes():
     # equivalente "in-app" enquanto isso nao existe.
     db = get_supabase()
     alertas = []
-    hoje = date.today()
+    hoje = hoje_brasil()
     limite = hoje + timedelta(days=VENCENDO_EM_DIAS)
 
     docs = with_live_status(
@@ -1415,7 +1454,7 @@ def notificacoes():
 @app.get("/api/relatorios")
 def relatorios():
     db = get_supabase()
-    hoje = date.today()
+    hoje = hoje_brasil()
 
     inicio_mes, fim_mes = month_bounds(hoje.strftime("%Y-%m"))
     condominios_rows = db.table("condominios").select("id,nome").eq("status", "ativo").execute().data or []
