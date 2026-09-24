@@ -53,6 +53,12 @@ function formatMoney(value: any) {
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
 }
 
+// Converte o link "abrir" do Drive (.../view) pro formato embutivel em
+// iframe (.../preview) - se o link ja vier em outro formato, usa como esta.
+function drivePreviewUrl(viewUrl: string): string {
+  return viewUrl.replace(/\/view(\?.*)?$/, "/preview");
+}
+
 // "Hoje" pelo calendario local do navegador, nao UTC: Date().toISOString()
 // converte pra UTC, entao entre 21h e meia-noite no Brasil (UTC-3) mostraria
 // o dia seguinte por engano (escala do dia, EPI, geracao de mensalidade).
@@ -231,6 +237,7 @@ export default function Home() {
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
   const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
@@ -725,6 +732,10 @@ export default function Home() {
     window.location.href = "/login";
   }
 
+  function openPreview(url: string) {
+    setPreviewUrl(drivePreviewUrl(url));
+  }
+
   const isSindico = me?.papel === "sindico";
   const navSections: {label: string; items: [string, string, string][]}[] = isSindico ? [
     {label: "", items: [["meu-condominio", "Meu condomínio", "building"]]},
@@ -802,13 +813,13 @@ export default function Home() {
               <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
             </section>
             <section className="grid-two">
-              <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
+              <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" onPreview={openPreview} /></div>
               <div className="panel"><div className="panel-head"><h3>Pendências</h3><span>Aguardando cargo</span></div><DataTable rows={dashboard?.pendencias || []} type="employees" /></div>
             </section>
             {!!dashboard?.vencimentos?.length && (
               <section className="panel">
                 <div className="panel-head"><h3>Documentos vencidos ou vencendo</h3><span>Próximos 30 dias</span></div>
-                <DataTable rows={dashboard.vencimentos} type="docs" />
+                <DataTable rows={dashboard.vencimentos} type="docs" onPreview={openPreview} />
               </section>
             )}
           </>
@@ -842,7 +853,7 @@ export default function Home() {
             />
           </section>
         )}
-        {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" /></section>}
+        {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" onPreview={openPreview} /></section>}
         {tab === "condominios" && (
           <section className="panel">
             <div className="panel-head">
@@ -1110,6 +1121,10 @@ export default function Home() {
         />
       )}
 
+      {previewUrl && (
+        <DocumentPreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      )}
+
       {usuarioModal && (
         <UsuarioModal
           mode={usuarioModal.mode}
@@ -1187,7 +1202,7 @@ export default function Home() {
   );
 }
 
-function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void}) {
+function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (url: string) => void}) {
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
@@ -1214,7 +1229,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td>{row.arquivo_drive_url ? <a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row.arquivo_drive_url)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
@@ -1321,6 +1336,23 @@ function DismissModal({employee, onCancel, onConfirm}: {employee: any; onCancel:
           <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
           <button className="primary" onClick={confirm} disabled={saving}>{saving ? "Salvando..." : "Confirmar"}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DocumentPreviewModal({url, onClose}: {url: string; onClose: () => void}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card preview-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>Visualizar documento</h3>
+          <div className="row-actions">
+            <a className="link-btn" href={url.replace(/\/preview(\?.*)?$/, "/view")} target="_blank" rel="noopener noreferrer">Abrir no Drive ↗</a>
+            <button type="button" className="link-btn" onClick={onClose}>Fechar</button>
+          </div>
+        </div>
+        <iframe src={url} className="preview-frame" allow="autoplay" title="Preview do documento" />
       </div>
     </div>
   );
