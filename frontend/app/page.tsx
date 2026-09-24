@@ -7,6 +7,7 @@ type Dashboard = {
   documentos: number;
   condominios: number;
   aguardando_cargo: number;
+  afastados_hoje: number;
   vencidos: number;
   vencendo: number;
   recentes: any[];
@@ -20,6 +21,21 @@ const STATUS_VALIDADE_LABEL: Record<string, string> = {
   vencendo: "Vencendo",
   vencido: "Vencido",
   nao_aplicavel: "—",
+};
+
+const TIPOS_AFASTAMENTO = ["Ferias", "AtestadoMedico", "LicencaMaternidade", "LicencaPaternidade", "Suspensao", "Outro"];
+const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
+  Ferias: "Férias",
+  AtestadoMedico: "Atestado médico",
+  LicencaMaternidade: "Licença maternidade",
+  LicencaPaternidade: "Licença paternidade",
+  Suspensao: "Suspensão",
+  Outro: "Outro",
+};
+const STATUS_AFASTAMENTO_LABEL: Record<string, string> = {
+  agendado: "Agendado",
+  em_andamento: "Em andamento",
+  concluido: "Concluído",
 };
 
 // Todo o trafego passa por este proxy same-origin (frontend/app/api/proxy) em
@@ -112,6 +128,7 @@ const ICON_PATHS: Record<string, JSX.Element> = {
   "check-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M8 12.5l2.5 2.5 5.5-6" /></>,
   "x-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M9 9l6 6M15 9l-6 6" /></>,
   activity: <path d="M3 12h4l2.5 7 4-14 2.5 7h4" />,
+  umbrella: <><path d="M12 3a9 9 0 0 1 9 9H3a9 9 0 0 1 9-9Z" /><path d="M12 3v1" /><path d="M12 12v7a2 2 0 0 1-4 0" /></>,
 };
 
 function Icon({name, size = 18}: {name: string; size?: number}) {
@@ -256,6 +273,8 @@ export default function Home() {
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
   const [epis, setEpis] = useState<any[]>([]);
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
+  const [afastamentos, setAfastamentos] = useState<any[]>([]);
+  const [afastamentoModal, setAfastamentoModal] = useState<{mode: "create" | "edit"; afastamento: any} | null>(null);
   const [alertas, setAlertas] = useState<any>({total: 0, vencidos: 0, vencendo: 0, items: []});
   const [relatorios, setRelatorios] = useState<any>({faturamento_por_condominio: [], turnover: {}, absenteismo: {}});
   const [toasts, setToasts] = useState<{id: number; type: "success" | "error"; message: string}[]>([]);
@@ -307,7 +326,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAlertas(), loadRelatorios()]);
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadAlertas(), loadRelatorios()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -328,6 +347,15 @@ export default function Home() {
       setEpis(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar EPIs.");
+    }
+  }
+
+  async function loadAfastamentos() {
+    try {
+      const r = await api("/api/afastamentos");
+      setAfastamentos(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar afastamentos.");
     }
   }
 
@@ -749,6 +777,26 @@ export default function Home() {
     await loadAlertas();
   }
 
+  async function saveAfastamento(data: Record<string, any>) {
+    const mode = afastamentoModal?.mode;
+    const id = afastamentoModal?.afastamento?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["funcionario_id", "tipo", "data_inicio", "data_fim", "observacao"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.funcionario_id;
+      await api(`/api/afastamentos/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/afastamentos", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setAfastamentoModal(null);
+    pushToast(mode === "edit" ? "Afastamento atualizado." : "Afastamento registrado.");
+    await refresh();
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
@@ -769,6 +817,7 @@ export default function Home() {
       ["condominios", "Condomínios", "building"],
       ["documentos", "Documentos", "file-text"],
       ["epis", "EPIs", "shield"],
+      ["afastamentos", "Férias & Afastamentos", "umbrella"],
     ]},
     {label: "Negócios", items: [
       ["contratos", "Contratos", "briefcase"],
@@ -826,6 +875,7 @@ export default function Home() {
             <section className="hero"><div><p className="eyebrow">BASE DO CRM</p><h2>Documentos organizados. Operação pronta para crescer.</h2><p>Acompanhe funcionários, documentos e condomínios em uma única visão.</p></div><button className="primary" onClick={() => setTab("processar")}>Processar documentos</button></section>
             <section className="stats">
               <article><div className="stat-icon"><Icon name="users" size={16} /></div><span>Funcionários</span><strong>{dashboard?.funcionarios ?? "—"}</strong><small>{dashboard?.aguardando_cargo ?? 0} aguardando cargo</small></article>
+              <article className={(dashboard?.afastados_hoje ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="umbrella" size={16} /></div><span>Afastados hoje</span><strong>{dashboard?.afastados_hoje ?? 0}</strong><small>Férias, atestados e licenças</small></article>
               <article><div className="stat-icon"><Icon name="file-text" size={16} /></div><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
               <article><div className="stat-icon"><Icon name="building" size={16} /></div><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
               <article><div className="stat-icon"><Icon name="upload" size={16} /></div><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
@@ -1022,6 +1072,26 @@ export default function Home() {
             )}
           </section>
         )}
+        {tab === "afastamentos" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Férias & Afastamentos</h3><span>{afastamentos.length} registros{dashboard?.afastados_hoje ? ` · ${dashboard.afastados_hoje} afastado(s) hoje` : ""}</span></div>
+              <button className="primary" onClick={() => setAfastamentoModal({mode: "create", afastamento: {}})}>Novo afastamento</button>
+            </div>
+            {!afastamentos.length ? <div className="empty">Nenhum afastamento registrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Tipo</th><th>Início</th><th>Fim</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {afastamentos.map((a: any) => <tr key={a.id}>
+                  <td>{a.funcionarios?.nome || "—"}</td>
+                  <td>{TIPO_AFASTAMENTO_LABEL[a.tipo] || a.tipo}</td>
+                  <td>{a.data_inicio}</td>
+                  <td>{a.data_fim}</td>
+                  <td><span className={"badge " + (a.status === "em_andamento" ? "warn" : "")}>{STATUS_AFASTAMENTO_LABEL[a.status] || a.status}</span></td>
+                  <td className="row-actions"><button className="link-btn" onClick={() => setAfastamentoModal({mode: "edit", afastamento: a})}>Editar</button></td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
         {tab === "alertas" && (
           <section className="panel">
             <div className="panel-head">
@@ -1209,6 +1279,16 @@ export default function Home() {
           funcionarios={funcionarios}
           onCancel={() => setEpiModal(null)}
           onSave={saveEpi}
+        />
+      )}
+
+      {afastamentoModal && (
+        <AfastamentoModal
+          mode={afastamentoModal.mode}
+          afastamento={afastamentoModal.afastamento}
+          funcionarios={funcionarios}
+          onCancel={() => setAfastamentoModal(null)}
+          onSave={saveAfastamento}
         />
       )}
 
@@ -1750,6 +1830,64 @@ function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" |
           <label>Data de entrega<input type="date" value={form.data_entrega} onChange={e => setForm(f => ({...f, data_entrega: e.target.value}))} /></label>
           <label>Validade<input type="date" value={form.data_validade} onChange={e => setForm(f => ({...f, data_validade: e.target.value}))} /></label>
           <label className="span-2">Termo assinado (link)<input value={form.termo_assinado_url} onChange={e => setForm(f => ({...f, termo_assinado_url: e.target.value}))} placeholder="URL do termo de responsabilidade" /></label>
+          <label className="span-2">Observação<textarea value={form.observacao} onChange={e => setForm(f => ({...f, observacao: e.target.value}))} rows={2} /></label>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AfastamentoModal({mode, afastamento, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; afastamento: any; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    funcionario_id: afastamento?.funcionario_id || "",
+    tipo: afastamento?.tipo || "Ferias",
+    data_inicio: afastamento?.data_inicio || localDateISO(),
+    data_fim: afastamento?.data_fim || localDateISO(),
+    observacao: afastamento?.observacao || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar afastamento.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo afastamento" : `Editar afastamento`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Funcionário
+            <select value={form.funcionario_id} onChange={e => setForm(f => ({...f, funcionario_id: e.target.value}))} required disabled={mode === "edit"}>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+          </label>
+          <label>
+            Tipo
+            <select value={form.tipo} onChange={e => setForm(f => ({...f, tipo: e.target.value}))} required>
+              {TIPOS_AFASTAMENTO.map(t => <option key={t} value={t}>{TIPO_AFASTAMENTO_LABEL[t]}</option>)}
+            </select>
+          </label>
+          <label>Início<input type="date" value={form.data_inicio} onChange={e => setForm(f => ({...f, data_inicio: e.target.value}))} required /></label>
+          <label>Fim<input type="date" value={form.data_fim} onChange={e => setForm(f => ({...f, data_fim: e.target.value}))} required /></label>
           <label className="span-2">Observação<textarea value={form.observacao} onChange={e => setForm(f => ({...f, observacao: e.target.value}))} rows={2} /></label>
         </div>
         {error && <div className="alert error">{error}</div>}

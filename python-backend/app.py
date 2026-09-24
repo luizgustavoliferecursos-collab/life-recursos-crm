@@ -24,7 +24,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from supabase import create_client
 
 APP_NAME = "LIFE Recursos API"
@@ -253,6 +253,25 @@ def compute_status_validade(data_validade: Any) -> str:
     if data_validade <= today + timedelta(days=VENCENDO_EM_DIAS):
         return "vencendo"
     return "valido"
+
+def compute_status_afastamento(data_inicio: Any, data_fim: Any) -> str:
+    # Status sempre recalculado na leitura (mesmo padrao de status_validade/
+    # status_calculado) - nunca fica desatualizado so pelo passar do tempo.
+    if isinstance(data_inicio, str):
+        data_inicio = date.fromisoformat(data_inicio[:10])
+    if isinstance(data_fim, str):
+        data_fim = date.fromisoformat(data_fim[:10])
+    today = hoje_brasil()
+    if today < data_inicio:
+        return "agendado"
+    if today > data_fim:
+        return "concluido"
+    return "em_andamento"
+
+def with_live_status_afastamento(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for row in rows:
+        row["status"] = compute_status_afastamento(row["data_inicio"], row["data_fim"])
+    return rows
 
 def compute_status_lancamento(row: dict[str, Any]) -> str:
     # Igual ao status_validade de documentos: "atrasado" e sempre recalculado na
@@ -871,6 +890,47 @@ class EpiUpdate(BaseModel):
     termo_assinado_url: str | None = None
     observacao: str | None = None
 
+VALID_TIPOS_AFASTAMENTO = ["Ferias", "AtestadoMedico", "LicencaMaternidade", "LicencaPaternidade", "Suspensao", "Outro"]
+
+class AfastamentoCreate(BaseModel):
+    funcionario_id: str
+    tipo: str
+    data_inicio: date
+    data_fim: date
+    observacao: str | None = None
+
+    @field_validator("tipo")
+    @classmethod
+    def valida_tipo(cls, value: str) -> str:
+        if value not in VALID_TIPOS_AFASTAMENTO:
+            raise ValueError(f"Tipo invalido. Use um de: {', '.join(VALID_TIPOS_AFASTAMENTO)}")
+        return value
+
+    @model_validator(mode="after")
+    def valida_periodo(self):
+        if self.data_fim < self.data_inicio:
+            raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
+        return self
+
+class AfastamentoUpdate(BaseModel):
+    tipo: str | None = None
+    data_inicio: date | None = None
+    data_fim: date | None = None
+    observacao: str | None = None
+
+    @field_validator("tipo")
+    @classmethod
+    def valida_tipo(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_TIPOS_AFASTAMENTO:
+            raise ValueError(f"Tipo invalido. Use um de: {', '.join(VALID_TIPOS_AFASTAMENTO)}")
+        return value
+
+    @model_validator(mode="after")
+    def valida_periodo(self):
+        if self.data_inicio and self.data_fim and self.data_fim < self.data_inicio:
+            raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
+        return self
+
 def document_already_registered(
     db,
     doc_type: str,
@@ -1456,6 +1516,18 @@ def set_escala(payload: EscalaAtribuir):
             if conflito.data:
                 outro = (conflito.data[0].get("postos_trabalho") or {}).get("nome") or "outro posto"
                 aviso = f"Este funcionario ja esta escalado em \"{outro}\" neste mesmo dia."
+            else:
+                afastamento = (
+                    db.table("afastamentos")
+                    .select("tipo")
+                    .eq("funcionario_id", payload.funcionario_id)
+                    .lte("data_inicio", payload.data.isoformat())
+                    .gte("data_fim", payload.data.isoformat())
+                    .limit(1)
+                    .execute()
+                )
+                if afastamento.data:
+                    aviso = f"Este funcionario esta de {afastamento.data[0]['tipo']} neste dia."
         result = db.table("escalas").upsert(data, on_conflict="posto_id,data").execute()
         response = dict(result.data[0])
         log_auditoria(db, "definir", "escala", response.get("id"), {"posto_id": payload.posto_id, "data": payload.data.isoformat()})
@@ -1709,6 +1781,46 @@ def update_epi(epi_id: str, payload: EpiUpdate):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar EPI: {exc}")
 
+@app.get("/api/afastamentos")
+def list_afastamentos(funcionario_id: str | None = None):
+    try:
+        query = get_supabase().table("afastamentos").select("*,funcionarios(nome)").order("data_inicio", desc=True)
+        if funcionario_id:
+            query = query.eq("funcionario_id", funcionario_id)
+        rows = with_live_status_afastamento(query.execute().data or [])
+        return {"items": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar afastamentos: {exc}")
+
+@app.post("/api/afastamentos", status_code=201)
+def create_afastamento(payload: AfastamentoCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    try:
+        result = db.table("afastamentos").insert(data).execute()
+        log_auditoria(db, "criar", "afastamento", result.data[0]["id"], {"funcionario_id": payload.funcionario_id, "tipo": payload.tipo})
+        return with_live_status_afastamento(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao registrar afastamento: {exc}")
+
+@app.put("/api/afastamentos/{afastamento_id}")
+def update_afastamento(afastamento_id: str, payload: AfastamentoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("afastamentos").select("id").eq("id", afastamento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Afastamento nao encontrado.")
+        result = db.table("afastamentos").update(data).eq("id", afastamento_id).execute()
+        log_auditoria(db, "atualizar", "afastamento", afastamento_id, {"campos": list(data.keys())})
+        return with_live_status_afastamento(result.data)[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar afastamento: {exc}")
+
 @app.get("/api/notificacoes")
 def notificacoes():
     # Central de alertas: agrega, em uma unica lista ordenada por urgencia, tudo
@@ -1927,6 +2039,16 @@ def dashboard():
         condominiums_count = len(db.table("condominios").select("id").execute().data or [])
         pending = [row for row in employees_rows if row.get("cargo") == "Pendente"]
 
+        hoje_iso = hoje_brasil().isoformat()
+        afastados_count = len(
+            db.table("afastamentos")
+            .select("id")
+            .lte("data_inicio", hoje_iso)
+            .gte("data_fim", hoje_iso)
+            .execute()
+            .data or []
+        )
+
         lancamentos = with_live_status_financeiro(
             db.table("financeiro_lancamentos").select("tipo,valor,status,vencimento").execute().data or []
         )
@@ -1952,6 +2074,7 @@ def dashboard():
             "documentos": len(all_docs),
             "condominios": condominiums_count,
             "aguardando_cargo": len(pending),
+            "afastados_hoje": afastados_count,
             "vencidos": sum(1 for row in all_docs if row["status_validade"] == "vencido"),
             "vencendo": sum(1 for row in all_docs if row["status_validade"] == "vencendo"),
             "recentes": docs_rows,
