@@ -210,20 +210,22 @@ def image_to_pdf(data: bytes) -> bytes:
 
 def identify_document(client: anthropic.Anthropic, pdf_bytes: bytes) -> dict[str, Any]:
     encoded = base64.standard_b64encode(pdf_bytes).decode("utf-8")
-    prompt = """Analise este documento escaneado de um funcionario de uma empresa.
+    prompt = f"""Analise este documento escaneado de um funcionario de uma empresa.
 
 Responda APENAS com JSON valido, sem markdown e sem texto adicional:
-{
+{{
   "tipo_documento": "...",
   "nome_funcionario": "...",
+  "cargo": "...",
   "ano": 2026,
   "condominio": "...",
   "data_emissao": "2026-01-15"
-}
+}}
 
 Regras:
 - tipo_documento: nome curto e padronizado (Contrato, ASO, CertificadoEPI, FolhaDePonto, CertificadoQualificacao). Se incerto, use Documento.
 - nome_funcionario: nome completo como aparece no documento, com capitalizacao normal. Se nao houver confianca, use null.
+- cargo: a funcao/cargo do funcionario, SOMENTE se ficar claro no documento (cargo escrito, tipo de curso/certificado especifico da funcao, contexto do posto). Use exatamente um destes valores: {", ".join(VALID_ROLES)}. Se nao houver indicacao clara ou nao se encaixar em nenhum desses, use null - nao adivinhe.
 - ano: ano principal do documento; se desconhecido, use null.
 - condominio: nome do condominio/local de trabalho se constar; se nao, use null.
 - data_emissao: data de emissao/realizacao do documento (formato YYYY-MM-DD), a data mais relevante para calcular validade (ex.: data do exame no ASO, data de assinatura do termo de EPI, data de conclusao do curso). Se nao houver data explicita no documento, use null.
@@ -316,17 +318,35 @@ def find_employee_by_name(db, name: str) -> dict[str, Any] | None:
             return None
         start += page_size
 
-def get_or_create_employee(db, name: str, condominium: str | None):
+def normalize_cargo(value: str | None) -> str | None:
+    # A IA pode devolver a variante com acento (ex.: "Guardião") ou ja
+    # normalizada; so aceita se mapear pra um dos cargos validos do sistema.
+    if not value:
+        return None
+    value = value.strip()
+    mapped = FOLDER_TO_ROLE.get(value)
+    if mapped:
+        return mapped
+    return value if value in VALID_ROLES else None
+
+def get_or_create_employee(db, name: str, condominium: str | None, cargo: str | None = None):
     employee = find_employee_by_name(db, name)
     if employee:
+        updates: dict[str, Any] = {}
         if condominium and not employee.get("condominio"):
-            db.table("funcionarios").update({"condominio": condominium}).eq("id", employee["id"]).execute()
-            employee["condominio"] = condominium
+            updates["condominio"] = condominium
+        # So preenche o cargo se ainda estiver "Pendente" - nunca sobrescreve
+        # um cargo ja definido manualmente por causa de um documento novo.
+        if cargo and employee.get("cargo") == "Pendente":
+            updates["cargo"] = cargo
+        if updates:
+            db.table("funcionarios").update(updates).eq("id", employee["id"]).execute()
+            employee.update(updates)
         return employee
 
     created = db.table("funcionarios").insert({
         "nome": name,
-        "cargo": "Pendente",
+        "cargo": cargo or "Pendente",
         "condominio": condominium,
     }).execute()
     return created.data[0]
@@ -763,8 +783,9 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     doc_type = info.get("tipo_documento") or "Documento"
     year = info.get("ano")
     condominium = info.get("condominio")
+    cargo = normalize_cargo(info.get("cargo"))
     data_validade = compute_data_validade(doc_type, info.get("data_emissao"), year)
-    employee = get_or_create_employee(db, employee_name, condominium)
+    employee = get_or_create_employee(db, employee_name, condominium, cargo)
 
     target_name = f"{safe_filename_piece(doc_type)}_{safe_filename_piece(employee['nome'])}_{year or 'SemAno'}.pdf"
     existing = document_already_registered(db, employee["id"], doc_type, year, target_name)
