@@ -1032,7 +1032,8 @@ export default function Home() {
                 <button onClick={() => downloadCsv("funcionarios.csv", funcionarios, [
                   {key: "nome", label: "Nome"}, {key: "cargo", label: "Cargo"}, {key: "condominio", label: "Condomínio"},
                   {key: "status", label: "Status"}, {key: "cpf", label: "CPF"}, {key: "telefone", label: "Telefone"},
-                  {key: "data_admissao", label: "Admissão"},
+                  {key: "data_admissao", label: "Admissão"}, {key: "data_desligamento", label: "Demissão"},
+                  {key: "motivo_desligamento", label: "Motivo do desligamento"},
                 ])}>Exportar funcionários</button>
                 <button onClick={() => downloadCsv("documentos.csv", documentos, [
                   {key: "tipo_documento", label: "Tipo"}, {key: "ano", label: "Ano"},
