@@ -7,8 +7,8 @@
   --shadow-sm:0 1px 2px rgba(15,15,25,.05),0 1px 1px rgba(15,15,25,.04);
   --shadow-md:0 10px 30px rgba(15,15,25,.08);
   --shadow-lg:0 24px 60px rgba(15,15,25,.22);
-  --font-sans:var(--font-body),Manrope,ui-sans-serif,system-ui,-apple-system,sans-serif;
-  --font-head:var(--font-display),var(--font-body),ui-sans-serif,sans-serif;
+  --font-sans:var(--font-body),Sora,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --font-head:var(--font-body),ui-sans-serif,sans-serif;
   --font-mono:var(--font-mono-raw),ui-monospace,"SFMono-Regular",Menlo,monospace;
 }
 *{box-sizing:border-box}
