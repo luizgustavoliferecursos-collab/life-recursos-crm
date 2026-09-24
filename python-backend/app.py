@@ -1802,7 +1802,7 @@ def relatorios():
     # conta pra quem efetivamente cobriu (substituto_id); "falta" nao conta.
     escalas_mes = (
         db.table("escalas")
-        .select("funcionario_id,substituto_id,status,postos_trabalho(turno)")
+        .select("posto_id,funcionario_id,substituto_id,status,postos_trabalho(turno)")
         .gte("data", inicio_mes.isoformat())
         .lt("data", fim_mes.isoformat())
         .execute()
@@ -1811,6 +1811,7 @@ def relatorios():
     )
     dias_por_funcionario: dict[str, int] = {}
     horas_por_funcionario: dict[str, float] = {}
+    dias_por_funcionario_e_posto: dict[tuple[str, str], int] = {}
     for row in escalas_mes:
         if row.get("status") == "falta":
             continue
@@ -1820,9 +1821,14 @@ def relatorios():
         horas = horas_do_turno((row.get("postos_trabalho") or {}).get("turno"))
         dias_por_funcionario[quem] = dias_por_funcionario.get(quem, 0) + 1
         horas_por_funcionario[quem] = horas_por_funcionario.get(quem, 0) + horas
+        posto_id = row.get("posto_id")
+        if posto_id:
+            chave = (quem, posto_id)
+            dias_por_funcionario_e_posto[chave] = dias_por_funcionario_e_posto.get(chave, 0) + 1
 
     funcionarios_map = {
-        row["id"]: row for row in db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
+        row["id"]: row
+        for row in db.table("funcionarios").select("id,nome,cargo,condominio,salario_base").execute().data or []
     }
     horas_relatorio = []
     for funcionario_id, total_horas in horas_por_funcionario.items():
@@ -1838,11 +1844,54 @@ def relatorios():
         })
     horas_relatorio.sort(key=lambda row: -row["horas_trabalhadas"])
 
+    # Margem por condominio: receita do contrato vs. custo de mao de obra dos
+    # postos daquele condominio. O salario mensal de cada funcionario e
+    # rateado proporcionalmente entre os postos em que ele trabalhou no mes
+    # (cobre substituicao, onde a pessoa cobre um posto que nao e o dela) -
+    # indicador central pra uma prestadora de servico, aproximado a partir do
+    # que a escala e o cadastro ja tem (nao substitui o calculo contabil exato).
+    custo_por_posto: dict[str, float] = {}
+    for (funcionario_id, posto_id), dias_no_posto in dias_por_funcionario_e_posto.items():
+        salario = float((funcionarios_map.get(funcionario_id) or {}).get("salario_base") or 0)
+        if not salario:
+            continue
+        total_dias = dias_por_funcionario.get(funcionario_id, 0)
+        proporcao = dias_no_posto / total_dias if total_dias else 0
+        custo_por_posto[posto_id] = custo_por_posto.get(posto_id, 0) + salario * proporcao
+
+    postos_rows = db.table("postos_trabalho").select("id,nome,condominio_id").execute().data or []
+    postos_por_condominio: dict[str, list] = {}
+    custo_por_condominio: dict[str, float] = {}
+    for posto in postos_rows:
+        cid = posto.get("condominio_id")
+        if not cid:
+            continue
+        custo_posto = round(custo_por_posto.get(posto["id"], 0), 2)
+        postos_por_condominio.setdefault(cid, []).append({"posto": posto["nome"], "custo_mao_de_obra": custo_posto})
+        custo_por_condominio[cid] = custo_por_condominio.get(cid, 0) + custo_posto
+
+    margem_por_condominio = []
+    for row in condominios_rows:
+        cid = row["id"]
+        receita = previsto_por_cond.get(cid, 0)
+        custo = round(custo_por_condominio.get(cid, 0), 2)
+        margem_por_condominio.append({
+            "condominio_id": cid,
+            "condominio": row["nome"],
+            "receita_mensal": receita,
+            "custo_mao_de_obra": custo,
+            "margem": round(receita - custo, 2),
+            "margem_pct": round((receita - custo) / receita * 100, 1) if receita else None,
+            "postos": sorted(postos_por_condominio.get(cid, []), key=lambda p: -p["custo_mao_de_obra"]),
+        })
+    margem_por_condominio.sort(key=lambda row: row["margem"])
+
     return {
         "faturamento_por_condominio": faturamento,
         "turnover": {"desligados_periodo": desligados_periodo, "ativos": ativos, "taxa_pct": turnover_pct},
         "absenteismo": {"faltas_periodo": faltas, "total_escalas_periodo": total_escalas, "taxa_pct": absenteismo_pct},
         "horas_por_funcionario": horas_relatorio,
+        "margem_por_condominio": margem_por_condominio,
         "mes_referencia": hoje.strftime("%Y-%m"),
         "limite_mensal_horas": LIMITE_MENSAL_HORAS,
     }
