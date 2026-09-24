@@ -22,7 +22,15 @@ const STATUS_VALIDADE_LABEL: Record<string, string> = {
   nao_aplicavel: "—",
 };
 
-const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+// Todo o trafego passa por este proxy same-origin (frontend/app/api/proxy) em
+// vez de chamar o backend do Render direto do navegador: o proxy exige a
+// sessao (life_auth, verificada no middleware) e injeta o segredo interno que
+// o Python passou a exigir. Excecao: upload de documentos, que usa um token
+// de curta duracao pra chamar o Render direto (ver DIRECT_API/uploadToken) -
+// a Vercel limita o corpo de uma function em 4.5MB, pequeno demais pra PDFs
+// escaneados de ate 30MB.
+const API = "/api/proxy";
+const DIRECT_API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
@@ -103,6 +111,7 @@ const ICON_PATHS: Record<string, JSX.Element> = {
   "alert-triangle": <><path d="M10.3 3.9 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.9a1 1 0 0 0-1.7 0Z" /><path d="M12 9v4M12 16.5h.01" /></>,
   "check-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M8 12.5l2.5 2.5 5.5-6" /></>,
   "x-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M9 9l6 6M15 9l-6 6" /></>,
+  activity: <path d="M3 12h4l2.5 7 4-14 2.5 7h4" />,
 };
 
 function Icon({name, size = 18}: {name: string; size?: number}) {
@@ -207,10 +216,9 @@ const CONDOMINIO_FORM_FIELDS: {key: string; label: string; kind?: "select" | "te
 ];
 
 async function api(path: string, init?: RequestInit) {
-  if (!API || API.includes("URL_DO_BACKEND")) throw new Error("NEXT_PUBLIC_API_URL ainda não configurada.");
   const response = await fetch(API + path, init);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Falha na comunicação com o backend.");
+  if (!response.ok) throw new Error(data.detail || data.error || "Falha na comunicação com o backend.");
   return data;
 }
 
@@ -233,6 +241,7 @@ export default function Home() {
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
   const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
+  const [auditoria, setAuditoria] = useState<any[]>([]);
   const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
   const [contratos, setContratos] = useState<any[]>([]);
   const [contratoModal, setContratoModal] = useState<{mode: "create" | "edit"; contrato: any} | null>(null);
@@ -349,6 +358,15 @@ export default function Home() {
     }
   }
 
+  async function loadAuditoria() {
+    try {
+      const a = await api("/api/auditoria?limit=200");
+      setAuditoria(a.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar auditoria.");
+    }
+  }
+
   async function loadEscalas(inicioSemana: string) {
     try {
       const r = await api(`/api/escalas?data=${inicioSemana}&dias=7`);
@@ -367,7 +385,7 @@ export default function Home() {
   useEffect(() => { loadFinanceiro(); }, [lancamentoFiltro]);
 
   useEffect(() => {
-    if (me?.papel === "admin") loadUsuarios();
+    if (me?.papel === "admin") { loadUsuarios(); loadAuditoria(); }
   }, [me?.papel]);
 
   const filteredEmployees = useMemo(() => funcionarios.filter(item =>
@@ -399,7 +417,18 @@ export default function Home() {
     files.forEach(file => form.append("files", file));
     const timer = window.setInterval(() => setProgress(p => p < 85 ? p + 5 : p), 450);
     try {
-      const payload = await api("/api/documentos/processar", {method: "POST", body: form});
+      // Upload vai direto pro Render (nao pelo /api/proxy): a Vercel limita o
+      // corpo de uma function em 4.5MB, pequeno demais pra PDF escaneado.
+      // O token de curta duracao prova que quem esta chamando tem sessao
+      // valida, sem precisar do segredo interno (esse nunca vai pro navegador).
+      const {token} = await api("/api/documentos/upload-auth", {method: "POST"});
+      const uploadResponse = await fetch(DIRECT_API + "/api/documentos/processar", {
+        method: "POST",
+        headers: {"X-Upload-Token": token},
+        body: form,
+      });
+      const payload = await uploadResponse.json().catch(() => ({}));
+      if (!uploadResponse.ok) throw new Error(payload.detail || "Falha ao processar documentos.");
       setResults(payload.resultados || []);
       setProgress(100);
       await refresh();
@@ -746,7 +775,10 @@ export default function Home() {
       ["financeiro", "Financeiro", "dollar-sign"],
       ["relatorios", "Relatórios", "bar-chart"],
     ]},
-    ...(me?.papel === "admin" ? [{label: "Sistema", items: [["usuarios", "Usuários", "user-cog"]] as [string, string, string][]}] : []),
+    ...(me?.papel === "admin" ? [{label: "Sistema", items: [
+      ["usuarios", "Usuários", "user-cog"],
+      ["auditoria", "Auditoria", "activity"],
+    ] as [string, string, string][]}] : []),
   ];
   const tabs = navSections.flatMap(s => s.items);
 
@@ -1073,6 +1105,25 @@ export default function Home() {
                     <button className="link-btn" onClick={() => setUsuarioModal({mode: "edit", usuario: u})}>Editar</button>
                     <button className="link-btn" onClick={() => toggleUsuarioAtivo(u)}>{u.ativo ? "Desativar" : "Reativar"}</button>
                   </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "auditoria" && me?.papel === "admin" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Auditoria</h3><span>{auditoria.length} registros mais recentes</span></div>
+            </div>
+            <p className="muted" style={{margin: "0 0 14px"}}>Quem criou, editou, desligou ou pagou cada registro do sistema.</p>
+            {!auditoria.length ? <div className="empty">Nenhum registro de auditoria ainda.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Quando</th><th>Usuário</th><th>Ação</th><th>Entidade</th><th>Detalhes</th></tr></thead><tbody>
+                {auditoria.map(a => <tr key={a.id}>
+                  <td>{new Date(a.created_at).toLocaleString("pt-BR")}</td>
+                  <td>{a.usuario_nome || "desconhecido"}</td>
+                  <td><span className="badge">{(a.acao || "").replace(/_/g, " ")}</span></td>
+                  <td>{(a.entidade || "").replace(/_/g, " ")}</td>
+                  <td>{a.detalhes ? JSON.stringify(a.detalhes) : "—"}</td>
                 </tr>)}
               </tbody></table></div>
             )}

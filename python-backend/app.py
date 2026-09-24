@@ -6,14 +6,18 @@ import json
 import os
 import re
 import secrets
+import time
 import unicodedata
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 import anthropic
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
@@ -100,6 +104,66 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Antes desta mudanca, qualquer um que soubesse a URL do Render acessava a API
+# direto, sem login nenhum (o front so tinha uma tela de login "por cima").
+# Agora todo acesso passa pelo proxy same-origin do Next.js (frontend/app/api/proxy),
+# que so deixa passar quem tem sessao valida (life_auth) e injeta este segredo
+# compartilhado - se ele nao bater, a API recusa. So fica "aberta" (comportamento
+# antigo) enquanto BACKEND_SHARED_SECRET nao estiver configurado nas duas pontas,
+# pra nao quebrar ambientes que ainda nao migraram.
+BACKEND_SHARED_SECRET = env("BACKEND_SHARED_SECRET")
+PUBLIC_PATHS = {"/health"}
+# Upload de documentos e a unica excecao que chama o Render DIRETO do navegador
+# (nao pelo proxy): a Vercel limita o corpo de uma function em 4.5MB, pequeno
+# demais pra PDF escaneado de ate 30MB. Em vez do segredo interno (que nunca
+# pode chegar ao navegador), essa rota aceita um token de curta duracao
+# assinado pelo Next.js so depois de confirmar sessao valida.
+UPLOAD_TOKEN_PATHS = {"/api/documentos/processar"}
+
+_current_actor: ContextVar[dict[str, str | None]] = ContextVar("_current_actor", default={})
+
+def current_actor() -> dict[str, str | None]:
+    return _current_actor.get()
+
+def verify_upload_token(token: str | None, secret: str) -> str | None:
+    if not token:
+        return None
+    try:
+        user_id, exp_str, signature_hex = token.split(".")
+        expected = hmac.new(secret.encode("utf-8"), f"{user_id}.{exp_str}".encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature_hex):
+            return None
+        if int(exp_str) < int(time.time()):
+            return None
+        return user_id
+    except (ValueError, AttributeError):
+        return None
+
+@app.middleware("http")
+async def enforce_internal_secret(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    user_id_from_token = None
+    if BACKEND_SHARED_SECRET:
+        authorized = request.headers.get("x-internal-secret") == BACKEND_SHARED_SECRET
+        if not authorized and request.url.path in UPLOAD_TOKEN_PATHS:
+            user_id_from_token = verify_upload_token(request.headers.get("x-upload-token"), BACKEND_SHARED_SECRET)
+            authorized = user_id_from_token is not None
+        if not authorized:
+            return JSONResponse(status_code=401, content={"detail": "Nao autorizado."})
+
+    nome_header = request.headers.get("x-user-nome")
+    token = _current_actor.set({
+        "id": request.headers.get("x-user-id") or user_id_from_token,
+        "nome": unquote(nome_header) if nome_header else None,
+        "papel": request.headers.get("x-user-papel"),
+    })
+    try:
+        return await call_next(request)
+    finally:
+        _current_actor.reset(token)
 
 def decode_json_secret(direct_name: str, b64_name: str) -> dict[str, Any] | None:
     raw = env(direct_name)
@@ -577,6 +641,22 @@ def verify_password(password: str, stored: str) -> bool:
 def public_user(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key != "senha_hash"}
 
+def log_auditoria(db, acao: str, entidade: str, entidade_id: Any = None, detalhes: dict[str, Any] | None = None) -> None:
+    # Auditoria roda em melhor esforco: uma falha aqui (ex.: tabela ainda nao
+    # migrada) nunca pode derrubar a operacao principal que esta sendo registrada.
+    actor = current_actor()
+    try:
+        db.table("auditoria").insert({
+            "usuario_id": actor.get("id"),
+            "usuario_nome": actor.get("nome") or "desconhecido",
+            "acao": acao,
+            "entidade": entidade,
+            "entidade_id": str(entidade_id) if entidade_id is not None else None,
+            "detalhes": detalhes,
+        }).execute()
+    except Exception:
+        pass
+
 class LoginRequest(BaseModel):
     login: str = Field(min_length=1)
     senha: str = Field(min_length=1)
@@ -1026,6 +1106,7 @@ def create_employee(payload: FuncionarioCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("funcionarios").insert(data).execute()
+        log_auditoria(db, "criar", "funcionario", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         message = str(exc)
@@ -1044,6 +1125,7 @@ def update_employee(funcionario_id: str, payload: FuncionarioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "atualizar", "funcionario", funcionario_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1066,6 +1148,7 @@ def deactivate_employee(funcionario_id: str, payload: FuncionarioDesligar):
             "motivo_desligamento": payload.motivo,
         }
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "desligar", "funcionario", funcionario_id, {"motivo": payload.motivo})
         return result.data[0]
     except HTTPException:
         raise
@@ -1081,6 +1164,7 @@ def reactivate_employee(funcionario_id: str):
             raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
         data = {"status": "ativo", "data_desligamento": None, "motivo_desligamento": None}
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "reativar", "funcionario", funcionario_id)
         return result.data[0]
     except HTTPException:
         raise
@@ -1119,6 +1203,7 @@ def create_condominium(payload: CondominioCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("condominios").insert(data).execute()
+        log_auditoria(db, "criar", "condominio", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         message = str(exc)
@@ -1137,6 +1222,7 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
         result = db.table("condominios").update(data).eq("id", condominio_id).execute()
+        log_auditoria(db, "atualizar", "condominio", condominio_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1162,6 +1248,13 @@ def login(payload: LoginRequest):
         raise HTTPException(status_code=403, detail="Usuario desativado.")
     if not verify_password(senha, user.get("senha_hash", "")):
         raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
+    try:
+        db.table("auditoria").insert({
+            "usuario_id": user["id"], "usuario_nome": user["nome"],
+            "acao": "login", "entidade": "usuario", "entidade_id": user["id"],
+        }).execute()
+    except Exception:
+        pass
     return public_user(user)
 
 @app.get("/api/usuarios")
@@ -1172,6 +1265,18 @@ def list_users():
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar usuarios: {exc}")
 
+@app.get("/api/auditoria")
+def list_auditoria(limit: int = 100, entidade: str | None = None):
+    try:
+        limit = max(1, min(limit, 500))
+        query = get_supabase().table("auditoria").select("*").order("created_at", desc=True).limit(limit)
+        if entidade:
+            query = query.eq("entidade", entidade)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar auditoria: {exc}")
+
 @app.post("/api/usuarios", status_code=201)
 def create_user(payload: UsuarioCreate):
     db = get_supabase()
@@ -1179,6 +1284,7 @@ def create_user(payload: UsuarioCreate):
     data["senha_hash"] = hash_password(payload.senha)
     try:
         result = db.table("usuarios").insert(data).execute()
+        log_auditoria(db, "criar", "usuario", result.data[0]["id"], {"papel": data.get("papel")})
         return public_user(result.data[0])
     except Exception as exc:
         message = str(exc)
@@ -1199,6 +1305,7 @@ def update_user(usuario_id: str, payload: UsuarioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
         result = db.table("usuarios").update(data).eq("id", usuario_id).execute()
+        log_auditoria(db, "atualizar", "usuario", usuario_id, {"campos": [k for k in data.keys() if k != "senha_hash"]})
         return public_user(result.data[0])
     except HTTPException:
         raise
@@ -1223,6 +1330,7 @@ def create_contrato(payload: ContratoCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("contratos_condominio").insert(data).execute()
+        log_auditoria(db, "criar", "contrato", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar contrato: {exc}")
@@ -1238,6 +1346,7 @@ def update_contrato(contrato_id: str, payload: ContratoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Contrato nao encontrado.")
         result = db.table("contratos_condominio").update(data).eq("id", contrato_id).execute()
+        log_auditoria(db, "atualizar", "contrato", contrato_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1262,6 +1371,7 @@ def create_posto(payload: PostoCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("postos_trabalho").insert(data).execute()
+        log_auditoria(db, "criar", "posto_trabalho", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar posto de trabalho: {exc}")
@@ -1277,6 +1387,7 @@ def update_posto(posto_id: str, payload: PostoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
         result = db.table("postos_trabalho").update(data).eq("id", posto_id).execute()
+        log_auditoria(db, "atualizar", "posto_trabalho", posto_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1347,6 +1458,7 @@ def set_escala(payload: EscalaAtribuir):
                 aviso = f"Este funcionario ja esta escalado em \"{outro}\" neste mesmo dia."
         result = db.table("escalas").upsert(data, on_conflict="posto_id,data").execute()
         response = dict(result.data[0])
+        log_auditoria(db, "definir", "escala", response.get("id"), {"posto_id": payload.posto_id, "data": payload.data.isoformat()})
         if aviso:
             response["aviso"] = aviso
         return response
@@ -1396,6 +1508,7 @@ def gerar_recorrencia(payload: EscalaRecorrencia):
     try:
         if novas_escalas:
             db.table("escalas").insert(novas_escalas).execute()
+            log_auditoria(db, "gerar_recorrencia", "escala", payload.posto_id, {"criados": len(novas_escalas), "dias": payload.dias})
         return {
             "criados": len(novas_escalas),
             "dias_analisados": payload.dias,
@@ -1417,6 +1530,7 @@ def marcar_falta(escala_id: str, payload: EscalaFalta):
             .eq("id", escala_id)
             .execute()
         )
+        log_auditoria(db, "marcar_falta", "escala", escala_id, {"motivo": payload.motivo})
         return result.data[0]
     except HTTPException:
         raise
@@ -1436,6 +1550,7 @@ def substituir_escala(escala_id: str, payload: EscalaSubstituir):
             .eq("id", escala_id)
             .execute()
         )
+        log_auditoria(db, "substituir", "escala", escala_id, {"substituto_id": payload.substituto_id})
         return result.data[0]
     except HTTPException:
         raise
@@ -1470,6 +1585,7 @@ def create_financeiro(payload: LancamentoCreate):
     data.setdefault("origem", "outro")
     try:
         result = db.table("financeiro_lancamentos").insert(data).execute()
+        log_auditoria(db, "criar", "lancamento_financeiro", result.data[0]["id"])
         return with_live_status_financeiro(result.data)[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar lancamento: {exc}")
@@ -1485,6 +1601,7 @@ def update_financeiro(lancamento_id: str, payload: LancamentoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        log_auditoria(db, "atualizar", "lancamento_financeiro", lancamento_id, {"campos": list(data.keys())})
         return with_live_status_financeiro(result.data)[0]
     except HTTPException:
         raise
@@ -1503,6 +1620,7 @@ def pagar_financeiro(lancamento_id: str, payload: LancamentoPagar):
             "data_pagamento": (payload.data_pagamento or hoje_brasil()).isoformat(),
         }
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        log_auditoria(db, "pagar", "lancamento_financeiro", lancamento_id, {"data_pagamento": data["data_pagamento"]})
         return with_live_status_financeiro(result.data)[0]
     except HTTPException:
         raise
@@ -1546,6 +1664,8 @@ def gerar_mensalidades(payload: GerarMensalidades):
             "origem": "contrato",
         }).execute()
         criados += 1
+    if criados:
+        log_auditoria(db, "gerar_mensalidades", "lancamento_financeiro", None, {"mes": payload.mes, "criados": criados})
     return {"criados": criados, "ja_existentes": ja_existentes, "ignorados_sem_valor": ignorados}
 
 @app.get("/api/epis")
@@ -1566,6 +1686,7 @@ def create_epi(payload: EpiCreate):
     data.setdefault("data_entrega", hoje_brasil().isoformat())
     try:
         result = db.table("epis_entregues").insert(data).execute()
+        log_auditoria(db, "criar", "epi", result.data[0]["id"])
         return with_live_status(result.data)[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao registrar EPI: {exc}")
@@ -1581,6 +1702,7 @@ def update_epi(epi_id: str, payload: EpiUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Registro de EPI nao encontrado.")
         result = db.table("epis_entregues").update(data).eq("id", epi_id).execute()
+        log_auditoria(db, "atualizar", "epi", epi_id, {"campos": list(data.keys())})
         return with_live_status(result.data)[0]
     except HTTPException:
         raise

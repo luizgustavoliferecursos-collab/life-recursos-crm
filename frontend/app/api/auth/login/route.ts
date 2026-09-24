@@ -18,9 +18,13 @@ export async function POST(request: Request) {
 
   let usuario: any;
   try {
+    const sharedSecret = process.env.BACKEND_SHARED_SECRET || "";
     const backendResponse = await fetch(API + "/api/auth/login", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {
+        "Content-Type": "application/json",
+        ...(sharedSecret ? {"x-internal-secret": sharedSecret} : {}),
+      },
       body: JSON.stringify({login, senha}),
     });
     const payload = await backendResponse.json().catch(() => ({}));
