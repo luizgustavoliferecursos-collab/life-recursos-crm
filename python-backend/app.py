@@ -39,6 +39,9 @@ DOCUMENT_VALIDITY_DAYS = {
 }
 VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+# Tipos de documento que pertencem ao condominio, nao a um funcionario especifico
+# (ex.: folha de ponto e do posto/condominio como um todo, nao de uma pessoa).
+CONDOMINIO_LEVEL_DOC_TYPES = {"FolhaDePonto"}
 
 def hoje_brasil() -> date:
     # O servidor roda em UTC; usar date.today() bateria "vencido" ~3h adiantado
@@ -241,7 +244,7 @@ Responda APENAS com JSON valido, sem markdown e sem texto adicional:
 
 Regras:
 - tipo_documento: nome curto e padronizado (Contrato, ASO, CertificadoEPI, FolhaDePonto, CertificadoQualificacao). Se incerto, use Documento.
-- nome_funcionario: nome completo como aparece no documento, com capitalizacao normal. Se nao houver confianca, use null.
+- nome_funcionario: nome completo como aparece no documento, com capitalizacao normal. Se nao houver confianca, use null. IMPORTANTE: se tipo_documento for FolhaDePonto, o documento pertence ao condominio como um todo (nao a um funcionario especifico) - use null aqui mesmo que nomes apareçam na folha, e capriche em preencher "condominio" corretamente.
 - cargo: a funcao/cargo do funcionario, SOMENTE se ficar claro no documento (cargo escrito, tipo de curso/certificado especifico da funcao, contexto do posto). Use exatamente um destes valores: {", ".join(VALID_ROLES)}. Se nao houver indicacao clara ou nao se encaixar em nenhum desses, use null - nao adivinhe.
 - ano: ano principal do documento; se desconhecido, use null.
 - condominio: nome do condominio/local de trabalho se constar; se nao, use null.
@@ -308,6 +311,12 @@ def destination_folder_id(drive, employee: dict[str, Any]) -> str:
         return get_or_create_subfolder(drive, employee["nome"], root)
     return get_or_create_subfolder(drive, employee["nome"], role_folder_id(drive, employee["cargo"]))
 
+def condominio_documents_folder_id(drive, condominio_name: str) -> str:
+    # DRIVE_INBOX_FOLDER_ID nao e usado como destino de upload em nenhum outro
+    # fluxo - reaproveitado aqui como raiz das pastas de documentos por condominio.
+    root = require_drive_folder_id("DRIVE_INBOX_FOLDER_ID")
+    return get_or_create_subfolder(drive, condominio_name, root)
+
 def employee_match_key(name: str) -> str:
     # Remove acentos, normaliza espacos e ignora maiusculas/minusculas,
     # para "Ézio Castro" e "ezio  castro" apontarem para o mesmo funcionario.
@@ -366,6 +375,29 @@ def get_or_create_employee(db, name: str, condominium: str | None, cargo: str | 
         "cargo": cargo or "Pendente",
         "condominio": condominium,
     }).execute()
+    return created.data[0]
+
+def condominio_match_key(name: str) -> str:
+    return normalize_text(name or "").casefold()
+
+def find_condominio_by_name(db, name: str) -> dict[str, Any] | None:
+    target = condominio_match_key(name)
+    if not target:
+        return None
+    result = db.table("condominios").select("*").execute()
+    for row in result.data or []:
+        if condominio_match_key(row.get("nome", "")) == target:
+            return row
+    return None
+
+def get_or_create_condominio(db, name: str) -> dict[str, Any]:
+    # Mesma logica do get_or_create_employee: se a IA identificou o condominio
+    # de uma folha de ponto e ele ainda nao esta cadastrado, cria automaticamente
+    # em vez de falhar o processamento do documento.
+    existing = find_condominio_by_name(db, name)
+    if existing:
+        return existing
+    created = db.table("condominios").insert({"nome": name, "status": "ativo"}).execute()
     return created.data[0]
 
 def only_digits(value: str | None) -> str | None:
@@ -759,8 +791,20 @@ class EpiUpdate(BaseModel):
     termo_assinado_url: str | None = None
     observacao: str | None = None
 
-def document_already_registered(db, employee_id: Any, doc_type: str, year: Any, file_name: str):
-    query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("funcionario_id", employee_id).eq("tipo_documento", doc_type)
+def document_already_registered(
+    db,
+    doc_type: str,
+    year: Any,
+    file_name: str,
+    *,
+    funcionario_id: Any = None,
+    condominio_id: Any = None,
+):
+    query = db.table("documentos").select("id,arquivo_nome,arquivo_drive_url").eq("tipo_documento", doc_type)
+    if funcionario_id:
+        query = query.eq("funcionario_id", funcionario_id)
+    if condominio_id:
+        query = query.eq("condominio_id", condominio_id)
     if year is None:
         query = query.is_("ano", "null")
     else:
@@ -799,19 +843,77 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     drive = get_drive()
 
     info = identify_document(ai, pdf_bytes)
+    doc_type = info.get("tipo_documento") or "Documento"
+    year = info.get("ano")
+    condominium = info.get("condominio")
+    data_validade = compute_data_validade(doc_type, info.get("data_emissao"), year)
+
+    # Folha de ponto (e qualquer outro tipo condominio-level no futuro) nao
+    # pertence a um funcionario especifico - pertence ao condominio. Se o
+    # condominio ainda nao existe, cria automaticamente (mesma logica ja usada
+    # para auto-criar funcionario).
+    if doc_type in CONDOMINIO_LEVEL_DOC_TYPES:
+        if not condominium:
+            raise ValueError("A IA nao conseguiu identificar o condominio com confianca.")
+        condominio = get_or_create_condominio(db, condominium)
+
+        target_name = f"{safe_filename_piece(doc_type)}_{safe_filename_piece(condominio['nome'])}_{year or 'SemAno'}.pdf"
+        existing = document_already_registered(db, doc_type, year, target_name, condominio_id=condominio["id"])
+        if existing:
+            return {
+                "status": "duplicado",
+                "mensagem": "Documento ja cadastrado; nenhuma nova gravacao foi feita.",
+                "condominio": condominio["nome"],
+                "documento": doc_type,
+                "ano": year,
+                "arquivo_nome": existing.get("arquivo_nome"),
+                "arquivo_drive_url": existing.get("arquivo_drive_url"),
+                "checksum": checksum,
+            }
+
+        folder_id = condominio_documents_folder_id(drive, condominio["nome"])
+        uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
+        drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
+
+        doc_record: dict[str, Any] = {
+            "condominio_id": condominio["id"],
+            "tipo_documento": doc_type,
+            "ano": year,
+            "arquivo_nome": target_name,
+            "arquivo_drive_url": drive_url,
+            "origem": "automacao",
+        }
+        if data_validade:
+            doc_record["data_validade"] = data_validade.isoformat()
+        try:
+            db.table("documentos").insert(doc_record).execute()
+        except Exception:
+            try:
+                drive.files().delete(fileId=uploaded["id"]).execute()
+            finally:
+                raise
+
+        return {
+            "status": "sucesso",
+            "condominio": condominio["nome"],
+            "documento": doc_type,
+            "ano": year,
+            "arquivo_nome": target_name,
+            "arquivo_drive_url": drive_url,
+            "checksum": checksum,
+            "data_validade": data_validade.isoformat() if data_validade else None,
+            "status_validade": compute_status_validade(data_validade),
+        }
+
     employee_name = info.get("nome_funcionario")
     if not employee_name:
         raise ValueError("A IA nao conseguiu identificar o funcionario com confianca.")
 
-    doc_type = info.get("tipo_documento") or "Documento"
-    year = info.get("ano")
-    condominium = info.get("condominio")
     cargo = normalize_cargo(info.get("cargo"))
-    data_validade = compute_data_validade(doc_type, info.get("data_emissao"), year)
     employee = get_or_create_employee(db, employee_name, condominium, cargo)
 
     target_name = f"{safe_filename_piece(doc_type)}_{safe_filename_piece(employee['nome'])}_{year or 'SemAno'}.pdf"
-    existing = document_already_registered(db, employee["id"], doc_type, year, target_name)
+    existing = document_already_registered(db, doc_type, year, target_name, funcionario_id=employee["id"])
     if existing:
         return {
             "status": "duplicado",
@@ -892,7 +994,7 @@ def drive_status():
 
     folders = {}
     for key, env_name in {
-        "inbox": "DRIVE_INBOX_FOLDER_ID",
+        "documentos_condominio": "DRIVE_INBOX_FOLDER_ID",
         "funcionarios": "DRIVE_EMPLOYEES_FOLDER_ID",
         "aguardando_cargo": "DRIVE_PENDING_FOLDER_ID",
     }.items():
@@ -997,7 +1099,7 @@ def with_live_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def documents(limit: int = 100):
     try:
         limit = max(1, min(limit, 500))
-        result = get_supabase().table("documentos").select("*,funcionarios(nome,cargo,condominio)").order("id", desc=True).limit(limit).execute()
+        result = get_supabase().table("documentos").select("*,funcionarios(nome,cargo,condominio),condominios(nome)").order("id", desc=True).limit(limit).execute()
         return {"items": with_live_status(result.data or [])}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar documentos: {exc}")
@@ -1693,7 +1795,7 @@ def dashboard():
     try:
         db = get_supabase()
         employees_rows = db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
-        docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio)").order("id", desc=True).limit(8).execute().data or []
+        docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio),condominios(nome)").order("id", desc=True).limit(8).execute().data or []
         with_live_status(docs_rows)
         all_docs = with_live_status(
             db.table("documentos").select("id,tipo_documento,ano,data_validade,funcionarios(nome,cargo,condominio)").execute().data or []
