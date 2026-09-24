@@ -50,13 +50,14 @@ const DIRECT_API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
-const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"];
+const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"];
 const PAPEL_LABEL: Record<string, string> = {
   admin: "Administrador",
   rh: "RH",
   financeiro: "Financeiro",
   operacional: "Operacional",
   sindico: "Síndico",
+  colaborador: "Colaborador",
 };
 const TURNOS = ["12x36 Diurno", "12x36 Noturno", "6x1 Diurno", "6x1 Noturno", "Comercial"];
 const ESCALA_STATUS_LABEL: Record<string, string> = {
@@ -256,7 +257,7 @@ export default function Home() {
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
-  const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
+  const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null; funcionario_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
   const [auditoria, setAuditoria] = useState<any[]>([]);
   const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
@@ -575,6 +576,7 @@ export default function Home() {
       nome: data.nome,
       papel: data.papel,
       condominio_id: data.papel === "sindico" ? (data.condominio_id || null) : null,
+      funcionario_id: data.papel === "colaborador" ? (data.funcionario_id || null) : null,
     };
     if (data.senha) payload.senha = data.senha;
     if (mode === "edit" && id) {
@@ -813,8 +815,11 @@ export default function Home() {
   }
 
   const isSindico = me?.papel === "sindico";
+  const isColaborador = me?.papel === "colaborador";
   const navSections: {label: string; items: [string, string, string][]}[] = isSindico ? [
     {label: "", items: [["meu-condominio", "Meu condomínio", "building"]]},
+  ] : isColaborador ? [
+    {label: "", items: [["minha-escala", "Minha escala", "calendar"]]},
   ] : [
     {label: "Operação", items: [
       ["visao", "Visão geral", "home"],
@@ -844,7 +849,8 @@ export default function Home() {
 
   useEffect(() => {
     if (isSindico && tab !== "meu-condominio") setTab("meu-condominio");
-  }, [isSindico]);
+    if (isColaborador && tab !== "minha-escala") setTab("minha-escala");
+  }, [isSindico, isColaborador]);
 
   return (
     <div className="app-shell">
@@ -1228,6 +1234,9 @@ export default function Home() {
             lancamentos={lancamentos}
           />
         )}
+        {tab === "minha-escala" && isColaborador && (
+          <MinhaEscala me={me} escalaGrid={escalaGrid} />
+        )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
             <div className="panel-head">
@@ -1306,6 +1315,7 @@ export default function Home() {
           mode={usuarioModal.mode}
           usuario={usuarioModal.usuario}
           condominios={condominios}
+          funcionarios={funcionarios}
           onCancel={() => setUsuarioModal(null)}
           onSave={saveUsuario}
         />
@@ -1582,12 +1592,13 @@ function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" |
   );
 }
 
-function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "create" | "edit"; usuario: any; condominios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+function UsuarioModal({mode, usuario, condominios, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; usuario: any; condominios: any[]; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
   const [nome, setNome] = useState(usuario?.nome || "");
   const [login, setLogin] = useState(usuario?.login || "");
   const [senha, setSenha] = useState("");
   const [papel, setPapel] = useState(usuario?.papel || "operacional");
   const [condominioId, setCondominioId] = useState(usuario?.condominio_id || "");
+  const [funcionarioId, setFuncionarioId] = useState(usuario?.funcionario_id || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -1596,7 +1607,7 @@ function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "cr
     setSaving(true);
     setError("");
     try {
-      await onSave({nome, login, senha, papel, condominio_id: condominioId});
+      await onSave({nome, login, senha, papel, condominio_id: condominioId, funcionario_id: funcionarioId});
     } catch (e: any) {
       setError(e.message || "Erro ao salvar usuário.");
       setSaving(false);
@@ -1628,6 +1639,15 @@ function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "cr
             <select value={condominioId} onChange={e => setCondominioId(e.target.value)} required>
               <option value="">—</option>
               {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+        )}
+        {papel === "colaborador" && (
+          <label>
+            Funcionário
+            <select value={funcionarioId} onChange={e => setFuncionarioId(e.target.value)} required>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
             </select>
           </label>
         )}
@@ -2036,6 +2056,51 @@ function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamen
             ))}
           </tbody></table></div>
         )}
+      </section>
+    </>
+  );
+}
+
+function MinhaEscala({me, escalaGrid}: {me: any; escalaGrid: {datas: string[]; items: any[]}}) {
+  const meuFuncionarioId = me?.funcionario_id;
+
+  if (!meuFuncionarioId) {
+    return <section className="panel"><div className="empty">Nenhum funcionário vinculado a este usuário ainda. Peça para um administrador configurar.</div></section>;
+  }
+
+  const minhaSemana = escalaGrid.datas.map(dia => {
+    for (const item of escalaGrid.items) {
+      const escala = item.escalas_por_dia?.[dia];
+      if (!escala) continue;
+      if (escala.funcionario_id === meuFuncionarioId) return {dia, posto: item.posto, escala, substituindo: false};
+      if (escala.substituto_id === meuFuncionarioId) return {dia, posto: item.posto, escala, substituindo: true};
+    }
+    return {dia, posto: null, escala: null, substituindo: false};
+  });
+
+  return (
+    <>
+      <section className="hero">
+        <div>
+          <p className="eyebrow">MINHA ESCALA</p>
+          <h2>Sua semana de trabalho</h2>
+          <p>{escalaGrid.datas.length ? `De ${formatDiaCurto(escalaGrid.datas[0])} a ${formatDiaCurto(escalaGrid.datas[escalaGrid.datas.length - 1])}` : "Semana atual"}</p>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head"><h3>Escala da semana</h3></div>
+        <div className="table-wrap"><table><thead><tr><th>Dia</th><th>Posto</th><th>Condomínio</th><th>Status</th></tr></thead><tbody>
+          {minhaSemana.map(row => (
+            <tr key={row.dia}>
+              <td>{formatDiaCurto(row.dia)}</td>
+              <td>{row.posto?.nome || "—"}{row.substituindo ? " (substituição)" : ""}</td>
+              <td>{row.posto?.condominios?.nome || "—"}</td>
+              <td>{row.escala
+                ? <span className={"badge " + (row.escala.status === "falta" ? "danger" : "")}>{ESCALA_STATUS_LABEL[row.escala.status] || row.escala.status}</span>
+                : <span className="badge warn">Folga</span>}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
       </section>
     </>
   );
