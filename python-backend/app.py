@@ -1047,13 +1047,18 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
     db = get_supabase()
-    result = db.table("usuarios").select("*").eq("login", payload.login).limit(1).execute()
+    # Login sem diferenciar maiuscula/minuscula e sem espaco nas pontas - um
+    # nome com espaco (ex.: "Luiz Gustavo") e muito mais propenso a erro de
+    # digitacao/autocapitalizacao do celular do que um usuario tipo email.
+    login_normalizado = payload.login.strip()
+    senha = payload.senha.strip()
+    result = db.table("usuarios").select("*").ilike("login", login_normalizado).limit(1).execute()
     if not result.data:
         raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
     user = result.data[0]
     if not user.get("ativo", True):
         raise HTTPException(status_code=403, detail="Usuario desativado.")
-    if not verify_password(payload.senha, user.get("senha_hash", "")):
+    if not verify_password(senha, user.get("senha_hash", "")):
         raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
     return public_user(user)
 
