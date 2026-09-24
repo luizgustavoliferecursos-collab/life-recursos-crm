@@ -7,8 +7,9 @@
   --shadow-sm:0 1px 2px rgba(15,15,25,.05),0 1px 1px rgba(15,15,25,.04);
   --shadow-md:0 10px 30px rgba(15,15,25,.08);
   --shadow-lg:0 24px 60px rgba(15,15,25,.22);
-  --font-sans:var(--font-body),Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --font-sans:var(--font-body),Manrope,ui-sans-serif,system-ui,-apple-system,sans-serif;
   --font-head:var(--font-display),var(--font-body),ui-sans-serif,sans-serif;
+  --font-mono:var(--font-mono-raw),ui-monospace,"SFMono-Regular",Menlo,monospace;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--font-sans);-webkit-font-smoothing:antialiased}
@@ -26,7 +27,7 @@ h1,h2,h3{font-family:var(--font-head)}
 .brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#60a5fa);color:#fff;font-weight:800;font-family:var(--font-head);letter-spacing:-.5px;box-shadow:0 6px 18px var(--accent-glow)}
 .nav-scroll{display:flex;flex-direction:column;gap:18px;overflow-y:auto;flex:1;margin:0 -4px;padding:0 4px}
 .nav-section{display:flex;flex-direction:column;gap:3px}
-.nav-section-label{font-size:10.5px;font-weight:800;letter-spacing:.12em;color:#5b6280;text-transform:uppercase;padding:0 12px;margin-bottom:4px}
+.nav-section-label{font-size:10.5px;font-weight:700;letter-spacing:.12em;color:#5b6280;text-transform:uppercase;padding:0 12px;margin-bottom:4px;font-family:var(--font-mono)}
 .sidebar nav{display:flex;flex-direction:column;gap:2px}
 .sidebar nav button{display:flex;align-items:center;gap:11px;border:0;background:transparent;color:#aab0c6;text-align:left;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;font-weight:600;transition:background .15s ease,color .15s ease;position:relative}
 .sidebar nav button svg{flex-shrink:0;opacity:.85}
@@ -42,7 +43,7 @@ h1,h2,h3{font-family:var(--font-head)}
 
 .content{padding:28px 32px;min-width:0}
 .topbar{display:flex;justify-content:space-between;gap:24px;align-items:center;margin-bottom:26px}
-.eyebrow{font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--accent-dark);margin:0 0 6px;text-transform:uppercase}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.14em;color:var(--accent-dark);margin:0 0 6px;text-transform:uppercase;font-family:var(--font-mono)}
 .topbar h1{font-size:26px;margin:0;letter-spacing:-.03em;font-weight:700}
 .search{width:min(340px,42vw);border:1px solid var(--line);background:var(--panel);border-radius:var(--radius-sm);padding:11px 14px;outline:none;font-size:13.5px;transition:border-color .15s,box-shadow .15s}
 .search:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -59,7 +60,7 @@ h1,h2,h3{font-family:var(--font-head)}
 .stats article:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
 .stats span{display:block;color:var(--muted);font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .stats small{display:block;color:var(--muted-2);font-size:12px;margin-top:2px}
-.stats strong{display:block;font-size:28px;margin:9px 0 2px;letter-spacing:-.03em;font-family:var(--font-head)}
+.stats strong{display:block;font-size:28px;margin:9px 0 2px;letter-spacing:-.01em;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .stats article.alert-stat{border-color:#f3ce8a;background:linear-gradient(180deg,#fffaf0,#fff)}
 .stats article.alert-stat strong{color:#b45309}
 .stat-icon{width:32px;height:32px;border-radius:9px;background:var(--accent-soft);color:var(--accent-dark);display:grid;place-items:center;margin-bottom:10px}
@@ -73,7 +74,7 @@ h1,h2,h3{font-family:var(--font-head)}
 .panel-head span{font-size:12px;color:var(--muted)}
 .table-wrap{overflow:auto;border-radius:var(--radius-sm)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:var(--muted);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:10px 12px;border-bottom:1px solid var(--line);background:#fafbfe;position:sticky;top:0}
+th{text-align:left;color:var(--muted);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:10px 12px;border-bottom:1px solid var(--line);background:#fafbfe;position:sticky;top:0;font-family:var(--font-mono)}
 td{padding:12px;border-bottom:1px solid #f1f2f7;white-space:nowrap}
 tbody tr{transition:background .12s ease}
 tbody tr:hover{background:#fafaff}
