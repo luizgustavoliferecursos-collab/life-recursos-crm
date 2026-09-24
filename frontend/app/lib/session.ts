@@ -7,6 +7,7 @@ export type SessionPayload = {
   nome: string;
   papel: string;
   condominio_id: string | null;
+  funcionario_id: string | null;
   exp: number; // unix seconds
 };
 

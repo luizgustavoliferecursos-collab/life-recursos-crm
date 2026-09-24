@@ -554,7 +554,7 @@ class CondominioUpdate(BaseModel):
             raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
         return value
 
-VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"]
+VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"]
 PBKDF2_ITERATIONS = 100_000
 
 def hash_password(password: str) -> str:
@@ -587,6 +587,7 @@ class UsuarioCreate(BaseModel):
     senha: str = Field(min_length=6)
     papel: str
     condominio_id: str | None = None
+    funcionario_id: str | None = None
     ativo: bool = True
 
     @field_validator("papel")
@@ -600,6 +601,7 @@ class UsuarioUpdate(BaseModel):
     nome: str | None = None
     papel: str | None = None
     condominio_id: str | None = None
+    funcionario_id: str | None = None
     ativo: bool | None = None
     senha: str | None = Field(default=None, min_length=6)
 

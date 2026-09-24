@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   const maxAge = body.remember ? 60 * 60 * 24 * 30 : 60 * 60 * 12;
   const exp = Math.floor(Date.now() / 1000) + maxAge;
   const token = await signSession(
-    {sub: usuario.id, nome: usuario.nome, papel: usuario.papel, condominio_id: usuario.condominio_id ?? null, exp},
+    {sub: usuario.id, nome: usuario.nome, papel: usuario.papel, condominio_id: usuario.condominio_id ?? null, funcionario_id: usuario.funcionario_id ?? null, exp},
     secret
   );
 

@@ -12,5 +12,6 @@ export async function GET(request: NextRequest) {
     nome: session.nome,
     papel: session.papel,
     condominio_id: session.condominio_id,
+    funcionario_id: session.funcionario_id,
   });
 }
