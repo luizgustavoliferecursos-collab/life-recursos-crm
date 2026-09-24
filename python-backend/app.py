@@ -39,6 +39,17 @@ DOCUMENT_VALIDITY_DAYS = {
 }
 VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+# Horas por turno de trabalho, pra estimar horas trabalhadas/extras a partir
+# da escala real (aproximacao pra apoiar a folha, nao um calculo legal exato).
+HORAS_POR_TURNO = {"12x36": 12, "6x1": 8, "comercial": 8}
+LIMITE_MENSAL_HORAS = 220  # referencia CLT padrao (44h/semana)
+
+def horas_do_turno(turno: str | None) -> float:
+    turno_lower = (turno or "").lower()
+    for chave, horas in HORAS_POR_TURNO.items():
+        if chave in turno_lower:
+            return horas
+    return 8  # turno sem padrao reconhecido: assume jornada padrao de 8h
 # Tipos de documento que pertencem ao condominio, nao a um funcionario especifico
 # (ex.: folha de ponto e do posto/condominio como um todo, nao de uma pessoa).
 CONDOMINIO_LEVEL_DOC_TYPES = {"FolhaDePonto"}
@@ -1784,10 +1795,56 @@ def relatorios():
     faltas = sum(1 for row in escalas_periodo if row.get("status") == "falta")
     absenteismo_pct = round((faltas / total_escalas * 100), 1) if total_escalas else 0.0
 
+    # Horas trabalhadas/extras do mes atual, calculadas a partir da escala real -
+    # aproximacao pra apoiar a folha (nao substitui o calculo legal exato de
+    # horas extras, que varia por regime/turno/convencao coletiva). Conta
+    # "previsto"/"confirmado" como dia trabalhado pelo titular; "substituido"
+    # conta pra quem efetivamente cobriu (substituto_id); "falta" nao conta.
+    escalas_mes = (
+        db.table("escalas")
+        .select("funcionario_id,substituto_id,status,postos_trabalho(turno)")
+        .gte("data", inicio_mes.isoformat())
+        .lt("data", fim_mes.isoformat())
+        .execute()
+        .data
+        or []
+    )
+    dias_por_funcionario: dict[str, int] = {}
+    horas_por_funcionario: dict[str, float] = {}
+    for row in escalas_mes:
+        if row.get("status") == "falta":
+            continue
+        quem = row.get("substituto_id") if row.get("status") == "substituido" else row.get("funcionario_id")
+        if not quem:
+            continue
+        horas = horas_do_turno((row.get("postos_trabalho") or {}).get("turno"))
+        dias_por_funcionario[quem] = dias_por_funcionario.get(quem, 0) + 1
+        horas_por_funcionario[quem] = horas_por_funcionario.get(quem, 0) + horas
+
+    funcionarios_map = {
+        row["id"]: row for row in db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
+    }
+    horas_relatorio = []
+    for funcionario_id, total_horas in horas_por_funcionario.items():
+        info = funcionarios_map.get(funcionario_id, {})
+        horas_relatorio.append({
+            "funcionario_id": funcionario_id,
+            "funcionario": info.get("nome", "Desconhecido"),
+            "cargo": info.get("cargo"),
+            "condominio": info.get("condominio"),
+            "dias_trabalhados": dias_por_funcionario[funcionario_id],
+            "horas_trabalhadas": total_horas,
+            "horas_extras": max(0.0, total_horas - LIMITE_MENSAL_HORAS),
+        })
+    horas_relatorio.sort(key=lambda row: -row["horas_trabalhadas"])
+
     return {
         "faturamento_por_condominio": faturamento,
         "turnover": {"desligados_periodo": desligados_periodo, "ativos": ativos, "taxa_pct": turnover_pct},
         "absenteismo": {"faltas_periodo": faltas, "total_escalas_periodo": total_escalas, "taxa_pct": absenteismo_pct},
+        "horas_por_funcionario": horas_relatorio,
+        "mes_referencia": hoje.strftime("%Y-%m"),
+        "limite_mensal_horas": LIMITE_MENSAL_HORAS,
     }
 
 @app.get("/api/dashboard")

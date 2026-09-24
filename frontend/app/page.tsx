@@ -1027,6 +1027,24 @@ export default function Home() {
               )}
             </section>
             <section className="panel">
+              <div className="panel-head">
+                <div><h3>Horas trabalhadas / extras</h3><span>Mês {relatorios.mes_referencia || "atual"} · estimado a partir da escala</span></div>
+              </div>
+              <p className="muted" style={{margin: "0 0 14px"}}>Aproximação para apoiar a folha (12x36 = 12h/dia, 6x1 e comercial = 8h/dia), acima de {relatorios.limite_mensal_horas ?? 220}h/mês conta como hora extra. Não substitui o cálculo legal exato.</p>
+              {!relatorios.horas_por_funcionario?.length ? <div className="empty">Nenhuma escala registrada no mês.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Cargo</th><th>Condomínio</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Horas extras</th></tr></thead><tbody>
+                  {relatorios.horas_por_funcionario.map((r: any) => <tr key={r.funcionario_id}>
+                    <td>{r.funcionario}</td>
+                    <td>{r.cargo || "—"}</td>
+                    <td>{r.condominio || "—"}</td>
+                    <td>{r.dias_trabalhados}</td>
+                    <td>{r.horas_trabalhadas}h</td>
+                    <td>{r.horas_extras > 0 ? <span className="badge warn">{r.horas_extras}h</span> : "—"}</td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+            <section className="panel">
               <div className="panel-head"><h3>Exportar dados</h3><span>CSV, abre direto no Excel/Sheets</span></div>
               <div className="row-actions">
                 <button onClick={() => downloadCsv("funcionarios.csv", funcionarios, [
@@ -1042,6 +1060,11 @@ export default function Home() {
                   {key: "tipo", label: "Tipo"}, {key: "categoria", label: "Categoria"}, {key: "valor", label: "Valor"},
                   {key: "vencimento", label: "Vencimento"}, {key: "status_calculado", label: "Status"},
                 ])}>Exportar financeiro</button>
+                <button onClick={() => downloadCsv("horas-trabalhadas.csv", relatorios.horas_por_funcionario || [], [
+                  {key: "funcionario", label: "Funcionário"}, {key: "cargo", label: "Cargo"}, {key: "condominio", label: "Condomínio"},
+                  {key: "dias_trabalhados", label: "Dias trabalhados"}, {key: "horas_trabalhadas", label: "Horas trabalhadas"},
+                  {key: "horas_extras", label: "Horas extras"},
+                ])}>Exportar horas</button>
               </div>
             </section>
           </>
