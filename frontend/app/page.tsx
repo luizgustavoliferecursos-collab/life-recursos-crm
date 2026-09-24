@@ -63,6 +63,29 @@ function localDateISO(d: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+// Segunda-feira da semana da data informada (semana sempre comeca na
+// segunda, pra escala ficar organizada de forma previsivel).
+function mondayOf(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const diff = (date.getDay() + 6) % 7; // 0=domingo -> 6 dias desde a segunda anterior
+  date.setDate(date.getDate() - diff);
+  return localDateISO(date);
+}
+
+function addDaysISO(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d + days);
+  return localDateISO(date);
+}
+
+const DIA_SEMANA_LABEL = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+function formatDiaCurto(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return `${DIA_SEMANA_LABEL[date.getDay()]} ${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+}
+
 const ICON_PATHS: Record<string, JSX.Element> = {
   home: <path d="M3 11.5 12 4l9 7.5M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9" />,
   bell: <path d="M6 8a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 12 6 8ZM9.5 17.5a2.5 2.5 0 0 0 5 0" />,
@@ -215,8 +238,10 @@ export default function Home() {
   const [contratoModal, setContratoModal] = useState<{mode: "create" | "edit"; contrato: any} | null>(null);
   const [postos, setPostos] = useState<any[]>([]);
   const [postoModal, setPostoModal] = useState<{mode: "create" | "edit"; posto: any} | null>(null);
-  const [escalaData, setEscalaData] = useState(() => localDateISO());
-  const [escalas, setEscalas] = useState<any[]>([]);
+  const [semanaInicio, setSemanaInicio] = useState(() => mondayOf(localDateISO()));
+  const [escalaGrid, setEscalaGrid] = useState<{datas: string[]; items: any[]}>({datas: [], items: []});
+  const [escalaCell, setEscalaCell] = useState<{posto: any; dia: string; escala: any} | null>(null);
+  const [gerarEscalaModal, setGerarEscalaModal] = useState<any | null>(null);
   const [lancamentos, setLancamentos] = useState<any[]>([]);
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
@@ -324,10 +349,10 @@ export default function Home() {
     }
   }
 
-  async function loadEscalas(dataAlvo: string) {
+  async function loadEscalas(inicioSemana: string) {
     try {
-      const r = await api(`/api/escalas?data=${dataAlvo}`);
-      setEscalas(r.items || []);
+      const r = await api(`/api/escalas?data=${inicioSemana}&dias=7`);
+      setEscalaGrid({datas: r.datas || [], items: r.items || []});
     } catch (e: any) {
       setError(e.message || "Erro ao carregar escalas.");
     }
@@ -338,7 +363,7 @@ export default function Home() {
     fetch("/api/auth/me").then(r => r.ok ? r.json() : null).then(setMe).catch(() => setMe(null));
   }, []);
 
-  useEffect(() => { loadEscalas(escalaData); }, [escalaData]);
+  useEffect(() => { loadEscalas(semanaInicio); }, [semanaInicio]);
   useEffect(() => { loadFinanceiro(); }, [lancamentoFiltro]);
 
   useEffect(() => {
@@ -561,15 +586,16 @@ export default function Home() {
     await refresh();
   }
 
-  async function atribuirEscala(postoId: string, funcionarioId: string) {
+  async function atribuirEscala(postoId: string, dia: string, funcionarioId: string) {
     try {
-      await api("/api/escalas", {
+      const resultado = await api("/api/escalas", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({posto_id: postoId, data: escalaData, funcionario_id: funcionarioId || null}),
+        body: JSON.stringify({posto_id: postoId, data: dia, funcionario_id: funcionarioId || null}),
       });
-      pushToast(funcionarioId ? "Escala atribuída." : "Posto marcado como vago.");
-      await loadEscalas(escalaData);
+      if (resultado.aviso) pushToast(resultado.aviso, "error");
+      else pushToast(funcionarioId ? "Escala atribuída." : "Posto marcado como vago.");
+      await loadEscalas(semanaInicio);
     } catch (e: any) {
       setError(e.message || "Erro ao atribuir escala.");
       pushToast("Erro ao atribuir escala.", "error");
@@ -586,7 +612,7 @@ export default function Home() {
         body: JSON.stringify({motivo: motivo || null}),
       });
       pushToast("Falta registrada.");
-      await loadEscalas(escalaData);
+      await loadEscalas(semanaInicio);
     } catch (e: any) {
       setError(e.message || "Erro ao marcar falta.");
       pushToast("Erro ao marcar falta.", "error");
@@ -602,11 +628,22 @@ export default function Home() {
         body: JSON.stringify({substituto_id: substitutoId}),
       });
       pushToast("Substituição registrada.");
-      await loadEscalas(escalaData);
+      await loadEscalas(semanaInicio);
     } catch (e: any) {
       setError(e.message || "Erro ao substituir.");
       pushToast("Erro ao substituir.", "error");
     }
+  }
+
+  async function gerarEscalaAutomatica(data: {posto_id: string; funcionario_id: string; data_inicio: string; dias: number}) {
+    const r = await api("/api/escalas/gerar-recorrencia", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(data),
+    });
+    pushToast(`${r.criados} dia(s) de escala gerado(s) automaticamente${r.ja_ocupados ? ` · ${r.ja_ocupados} já tinham escala e não foram alterados` : ""}.`);
+    setGerarEscalaModal(null);
+    await loadEscalas(semanaInicio);
   }
 
   async function saveLancamento(data: Record<string, any>) {
@@ -862,38 +899,36 @@ export default function Home() {
             </section>
             <section className="panel">
               <div className="panel-head">
-                <div><h3>Escala do dia</h3><span>Quem cobre cada posto</span></div>
-                <input type="date" value={escalaData} onChange={e => setEscalaData(e.target.value)} />
+                <div><h3>Escala da semana</h3><span>{formatDiaCurto(semanaInicio)} – {escalaGrid.datas.length ? formatDiaCurto(escalaGrid.datas[escalaGrid.datas.length - 1]) : ""}</span></div>
+                <div className="row-actions">
+                  <button onClick={() => setSemanaInicio(addDaysISO(semanaInicio, -7))}>← Anterior</button>
+                  <button onClick={() => setSemanaInicio(mondayOf(localDateISO()))}>Esta semana</button>
+                  <button onClick={() => setSemanaInicio(addDaysISO(semanaInicio, 7))}>Próxima →</button>
+                </div>
               </div>
-              {!escalas.length ? <div className="empty">Nenhum posto ativo cadastrado.</div> : (
-                <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Condomínio</th><th>Funcionário</th><th>Status</th><th>Ações</th></tr></thead><tbody>
-                  {escalas.map(({posto, escala}: any) => {
-                    const funcionariosAtivos = funcionarios.filter(f => f.status !== "inativo");
-                    return (
-                      <tr key={posto.id}>
-                        <td>{posto.nome}</td>
-                        <td>{posto.condominios?.nome || "—"}</td>
-                        <td>
-                          <select value={escala?.funcionario_id || ""} onChange={e => atribuirEscala(posto.id, e.target.value)}>
-                            <option value="">Vago</option>
-                            {funcionariosAtivos.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
-                          </select>
-                        </td>
-                        <td><span className={"badge " + (escala?.status === "falta" ? "danger" : escala?.status === "substituido" ? "warn" : "")}>{escala ? (ESCALA_STATUS_LABEL[escala.status] || escala.status) : "—"}</span></td>
-                        <td className="row-actions">
-                          {escala && escala.status !== "falta" && (
-                            <button className="link-btn" onClick={() => marcarFalta(escala.id)}>Marcar falta</button>
-                          )}
-                          {escala && escala.status === "falta" && (
-                            <select defaultValue="" onChange={e => substituirEscala(escala.id, e.target.value)}>
-                              <option value="">Substituir por...</option>
-                              {funcionariosAtivos.filter((f: any) => f.id !== escala.funcionario_id).map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
-                            </select>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+              {!escalaGrid.items.length ? <div className="empty">Nenhum posto ativo cadastrado.</div> : (
+                <div className="table-wrap"><table className="escala-grid"><thead><tr>
+                  <th>Posto</th>
+                  {escalaGrid.datas.map(dia => <th key={dia}>{formatDiaCurto(dia)}</th>)}
+                  <th>Automação</th>
+                </tr></thead><tbody>
+                  {escalaGrid.items.map(({posto, escalas_por_dia}: any) => (
+                    <tr key={posto.id}>
+                      <td><b>{posto.nome}</b><br /><small className="muted">{posto.condominios?.nome}{posto.turno ? ` · ${posto.turno}` : ""}</small></td>
+                      {escalaGrid.datas.map((dia: string) => {
+                        const escala = escalas_por_dia[dia];
+                        const estado = escala?.status === "falta" ? "cell-danger" : escala?.status === "substituido" ? "cell-warn" : escala?.funcionario_id ? "cell-ok" : "cell-vago";
+                        return (
+                          <td key={dia}>
+                            <button className={"escala-cell " + estado} onClick={() => setEscalaCell({posto, dia, escala})}>
+                              {escala?.funcionario?.nome ? escala.funcionario.nome.split(" ")[0] : "Vago"}
+                            </button>
+                          </td>
+                        );
+                      })}
+                      <td className="row-actions"><button className="link-btn" onClick={() => setGerarEscalaModal(posto)}>Gerar automático</button></td>
+                    </tr>
+                  ))}
                 </tbody></table></div>
               )}
             </section>
@@ -1017,7 +1052,7 @@ export default function Home() {
             condominios={condominios}
             contratos={contratos}
             postos={postos}
-            escalas={escalas}
+            escalaGrid={escalaGrid}
             lancamentos={lancamentos}
           />
         )}
@@ -1123,6 +1158,26 @@ export default function Home() {
           funcionarios={funcionarios}
           onCancel={() => setEpiModal(null)}
           onSave={saveEpi}
+        />
+      )}
+
+      {escalaCell && (
+        <EscalaCellModal
+          cell={escalaCell}
+          funcionarios={funcionarios}
+          onAssign={atribuirEscala}
+          onFalta={marcarFalta}
+          onSubstituir={substituirEscala}
+          onClose={() => setEscalaCell(null)}
+        />
+      )}
+
+      {gerarEscalaModal && (
+        <GerarEscalaModal
+          posto={gerarEscalaModal}
+          funcionarios={funcionarios}
+          onGerar={gerarEscalaAutomatica}
+          onCancel={() => setGerarEscalaModal(null)}
         />
       )}
 
@@ -1656,12 +1711,16 @@ function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" |
   );
 }
 
-function MeuCondominio({me, condominios, contratos, postos, escalas, lancamentos}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalas: any[]; lancamentos: any[]}) {
+function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]}) {
   const condominio = condominios.find((c: any) => c.id === me?.condominio_id);
   const meusContratos = contratos.filter((c: any) => c.condominio_id === me?.condominio_id);
   const meusPostos = postos.filter((p: any) => p.condominio_id === me?.condominio_id);
   const meuFinanceiro = lancamentos.filter((l: any) => l.condominio_id === me?.condominio_id);
-  const escalaPorPosto = (postoId: string) => escalas.find((e: any) => e.posto?.id === postoId)?.escala;
+  const hojeISO = localDateISO();
+  const escalaPorPosto = (postoId: string) => {
+    const item = escalaGrid.items.find((e: any) => e.posto?.id === postoId);
+    return item?.escalas_por_dia?.[hojeISO];
+  };
 
   if (!condominio) {
     return <section className="panel"><div className="empty">Nenhum condomínio vinculado a este usuário ainda. Peça para um administrador configurar.</div></section>;
@@ -1720,5 +1779,104 @@ function MeuCondominio({me, condominios, contratos, postos, escalas, lancamentos
         )}
       </section>
     </>
+  );
+}
+
+function EscalaCellModal({cell, funcionarios, onAssign, onFalta, onSubstituir, onClose}: {
+  cell: {posto: any; dia: string; escala: any};
+  funcionarios: any[];
+  onAssign: (postoId: string, dia: string, funcionarioId: string) => Promise<void>;
+  onFalta: (escalaId: string) => Promise<void>;
+  onSubstituir: (escalaId: string, substitutoId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const {posto, dia, escala} = cell;
+  const funcionariosAtivos = funcionarios.filter((f: any) => f.status !== "inativo");
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card modal-small" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{posto.nome}</h3>
+          <button type="button" className="link-btn" onClick={onClose}>Fechar</button>
+        </div>
+        <p className="muted">{posto.condominios?.nome || "—"} · {formatDiaCurto(dia)}</p>
+        <label>
+          Funcionário
+          <select
+            value={escala?.funcionario_id || ""}
+            onChange={(e) => { onAssign(posto.id, dia, e.target.value); onClose(); }}
+          >
+            <option value="">Vago</option>
+            {funcionariosAtivos.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+          </select>
+        </label>
+        {escala && (
+          <p className="muted">
+            Status atual: <span className={"badge " + (escala.status === "falta" ? "danger" : escala.status === "substituido" ? "warn" : "")}>{ESCALA_STATUS_LABEL[escala.status] || escala.status}</span>
+          </p>
+        )}
+        {escala && escala.status !== "falta" && (
+          <button onClick={() => { onFalta(escala.id); onClose(); }}>Marcar falta</button>
+        )}
+        {escala && escala.status === "falta" && (
+          <label>
+            Substituir por
+            <select defaultValue="" onChange={(e) => { if (e.target.value) { onSubstituir(escala.id, e.target.value); onClose(); } }}>
+              <option value="">Selecione...</option>
+              {funcionariosAtivos.filter((f: any) => f.id !== escala.funcionario_id).map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GerarEscalaModal({posto, funcionarios, onGerar, onCancel}: {posto: any; funcionarios: any[]; onGerar: (data: {posto_id: string; funcionario_id: string; data_inicio: string; dias: number}) => Promise<void>; onCancel: () => void}) {
+  const [funcionarioId, setFuncionarioId] = useState("");
+  const [dataInicio, setDataInicio] = useState(() => localDateISO());
+  const [dias, setDias] = useState(30);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const funcionariosAtivos = funcionarios.filter((f: any) => f.status !== "inativo");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onGerar({posto_id: posto.id, funcionario_id: funcionarioId, data_inicio: dataInicio, dias});
+    } catch (e: any) {
+      setError(e.message || "Erro ao gerar escala.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card modal-small" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>Gerar escala automática</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <p className="muted">{posto.nome} · turno {posto.turno || "não definido"}</p>
+        <label>
+          Funcionário
+          <select value={funcionarioId} onChange={e => setFuncionarioId(e.target.value)} required>
+            <option value="">—</option>
+            {funcionariosAtivos.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+          </select>
+        </label>
+        <label>Data de início<input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} /></label>
+        <label>Gerar para quantos dias<input type="number" min={1} max={90} value={dias} onChange={e => setDias(Number(e.target.value) || 1)} /></label>
+        <p className="muted">Segue o padrão do turno do posto: 12x36 alterna dia sim/dia não, 6x1 folga 1 dia a cada 7, Comercial só em dias úteis. Dias que já têm alguém escalado não são alterados.</p>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving || !funcionarioId}>{saving ? "Gerando..." : "Gerar"}</button>
+        </div>
+      </form>
+    </div>
   );
 }
