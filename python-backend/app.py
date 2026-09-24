@@ -1798,7 +1798,7 @@ def dashboard():
         docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio),condominios(nome)").order("id", desc=True).limit(8).execute().data or []
         with_live_status(docs_rows)
         all_docs = with_live_status(
-            db.table("documentos").select("id,tipo_documento,ano,data_validade,funcionarios(nome,cargo,condominio)").execute().data or []
+            db.table("documentos").select("id,tipo_documento,ano,data_validade,arquivo_drive_url,funcionarios(nome,cargo,condominio),condominios(nome)").execute().data or []
         )
         vencendo_ou_vencido = [row for row in all_docs if row["status_validade"] in ("vencendo", "vencido")]
         vencendo_ou_vencido.sort(key=lambda row: row.get("data_validade") or "")
