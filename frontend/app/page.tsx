@@ -272,6 +272,7 @@ export default function Home() {
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
   const [epis, setEpis] = useState<any[]>([]);
+  const [onboarding, setOnboarding] = useState<any[]>([]);
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
   const [afastamentos, setAfastamentos] = useState<any[]>([]);
   const [afastamentoModal, setAfastamentoModal] = useState<{mode: "create" | "edit"; afastamento: any} | null>(null);
@@ -326,7 +327,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadAlertas(), loadRelatorios()]);
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadAlertas(), loadRelatorios()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -356,6 +357,15 @@ export default function Home() {
       setAfastamentos(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar afastamentos.");
+    }
+  }
+
+  async function loadOnboarding() {
+    try {
+      const r = await api("/api/onboarding");
+      setOnboarding(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar checklist de onboarding.");
     }
   }
 
@@ -814,6 +824,7 @@ export default function Home() {
     ]},
     {label: "Cadastros", items: [
       ["funcionarios", "Funcionários", "users"],
+      ["onboarding", "Onboarding", "check-circle"],
       ["condominios", "Condomínios", "building"],
       ["documentos", "Documentos", "file-text"],
       ["epis", "EPIs", "shield"],
@@ -849,6 +860,7 @@ export default function Home() {
                     <Icon name={icon} size={17} />
                     <span>{label}</span>
                     {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
+                    {key === "onboarding" && onboarding.length > 0 && <span className="nav-badge">{onboarding.length}</span>}
                   </button>
                 ))}
               </nav>
@@ -922,6 +934,24 @@ export default function Home() {
               onEdit={(row) => setEmployeeModal({mode: "edit", employee: row})}
               onToggleStatus={(row) => setDismissModal(row)}
             />
+          </section>
+        )}
+        {tab === "onboarding" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Checklist de onboarding</h3><span>{onboarding.length} funcionário(s) com pendência</span></div>
+            </div>
+            <p className="muted" style={{margin: "0 0 14px"}}>Documentos obrigatórios por cargo que ainda faltam para cada funcionário ativo. Quem está com o checklist completo não aparece aqui.</p>
+            {!onboarding.length ? <div className="empty">Nenhuma pendência — todo mundo com o checklist completo.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Cargo</th><th>Condomínio</th><th>Documentos faltantes</th></tr></thead><tbody>
+                {onboarding.map((o: any) => <tr key={o.funcionario_id}>
+                  <td>{o.funcionario}</td>
+                  <td><span className="badge">{o.cargo}</span></td>
+                  <td>{o.condominio || "—"}</td>
+                  <td>{o.documentos_faltantes.map((d: string) => <span key={d} className="badge warn" style={{marginRight: 6}}>{d}</span>)}</td>
+                </tr>)}
+              </tbody></table></div>
+            )}
           </section>
         )}
         {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" /></section>}
