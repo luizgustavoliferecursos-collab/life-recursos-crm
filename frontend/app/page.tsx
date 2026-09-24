@@ -37,6 +37,11 @@ const STATUS_AFASTAMENTO_LABEL: Record<string, string> = {
   em_andamento: "Em andamento",
   concluido: "Concluído",
 };
+const STATUS_OCORRENCIA_LABEL: Record<string, string> = {
+  aberta: "Aberta",
+  em_andamento: "Em andamento",
+  resolvida: "Resolvida",
+};
 
 // Todo o trafego passa por este proxy same-origin (frontend/app/api/proxy) em
 // vez de chamar o backend do Render direto do navegador: o proxy exige a
@@ -246,6 +251,8 @@ export default function Home() {
   const [funcionarios, setFuncionarios] = useState<any[]>([]);
   const [documentos, setDocumentos] = useState<any[]>([]);
   const [condominios, setCondominios] = useState<any[]>([]);
+  const [ocorrencias, setOcorrencias] = useState<any[]>([]);
+  const [ocorrenciaModal, setOcorrenciaModal] = useState<{condominioId: string} | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -328,7 +335,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadAlertas(), loadRelatorios()]);
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadOcorrencias(), loadAlertas(), loadRelatorios()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -367,6 +374,45 @@ export default function Home() {
       setOnboarding(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar checklist de onboarding.");
+    }
+  }
+
+  async function loadOcorrencias() {
+    try {
+      const r = await api("/api/ocorrencias");
+      setOcorrencias(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar ocorrências.");
+    }
+  }
+
+  async function saveOcorrencia(condominioId: string, titulo: string, descricao: string) {
+    await api("/api/ocorrencias", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({condominio_id: condominioId, titulo, descricao: descricao || undefined}),
+    });
+    setOcorrenciaModal(null);
+    pushToast("Ocorrência registrada.");
+    await loadOcorrencias();
+  }
+
+  async function marcarOcorrencia(id: string, status: string) {
+    let resposta: string | null = null;
+    if (status === "resolvida") {
+      resposta = await askPrompt("Resolver ocorrência", "Resposta para o síndico (opcional).");
+      if (resposta === null) return;
+    }
+    try {
+      await api(`/api/ocorrencias/${id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status, ...(resposta ? {resposta} : {})}),
+      });
+      pushToast("Ocorrência atualizada.");
+      await loadOcorrencias();
+    } catch (e: any) {
+      pushToast(e.message || "Erro ao atualizar ocorrência.", "error");
     }
   }
 
@@ -824,6 +870,7 @@ export default function Home() {
     {label: "Operação", items: [
       ["visao", "Visão geral", "home"],
       ["alertas", "Alertas", "bell"],
+      ["ocorrencias", "Ocorrências", "alert-triangle"],
       ["postos", "Postos & Escalas", "calendar"],
       ["processar", "Processar documentos", "upload"],
     ]},
@@ -867,6 +914,7 @@ export default function Home() {
                     <span>{label}</span>
                     {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
                     {key === "onboarding" && onboarding.length > 0 && <span className="nav-badge">{onboarding.length}</span>}
+                    {key === "ocorrencias" && ocorrencias.filter((o: any) => o.status !== "resolvida").length > 0 && <span className="nav-badge">{ocorrencias.filter((o: any) => o.status !== "resolvida").length}</span>}
                   </button>
                 ))}
               </nav>
@@ -1146,6 +1194,28 @@ export default function Home() {
             )}
           </section>
         )}
+        {tab === "ocorrencias" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Ocorrências</h3><span>{ocorrencias.length} registradas pelos síndicos</span></div>
+            </div>
+            {!ocorrencias.length ? <div className="empty">Nenhuma ocorrência registrada.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Condomínio</th><th>Título</th><th>Descrição</th><th>Status</th><th>Resposta</th><th>Ações</th></tr></thead><tbody>
+                {ocorrencias.map((o: any) => <tr key={o.id}>
+                  <td>{o.condominios?.nome || "—"}</td>
+                  <td>{o.titulo}</td>
+                  <td>{o.descricao || "—"}</td>
+                  <td><span className={"badge " + (o.status === "aberta" ? "danger" : o.status === "em_andamento" ? "warn" : "")}>{STATUS_OCORRENCIA_LABEL[o.status] || o.status}</span></td>
+                  <td>{o.resposta || "—"}</td>
+                  <td className="row-actions">
+                    {o.status !== "em_andamento" && o.status !== "resolvida" && <button className="link-btn" onClick={() => marcarOcorrencia(o.id, "em_andamento")}>Marcar em andamento</button>}
+                    {o.status !== "resolvida" && <button className="link-btn" onClick={() => marcarOcorrencia(o.id, "resolvida")}>Resolver</button>}
+                  </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
         {tab === "relatorios" && (
           <>
             <section className="stats">
@@ -1232,6 +1302,8 @@ export default function Home() {
             postos={postos}
             escalaGrid={escalaGrid}
             lancamentos={lancamentos}
+            ocorrencias={ocorrencias}
+            onNovaOcorrencia={(condominioId) => setOcorrenciaModal({condominioId})}
           />
         )}
         {tab === "minha-escala" && isColaborador && (
@@ -1307,6 +1379,13 @@ export default function Home() {
           condominio={condominioModal.condominio}
           onCancel={() => setCondominioModal(null)}
           onSave={saveCondominio}
+        />
+      )}
+
+      {ocorrenciaModal && (
+        <OcorrenciaModal
+          onCancel={() => setOcorrenciaModal(null)}
+          onSave={(titulo, descricao) => saveOcorrencia(ocorrenciaModal.condominioId, titulo, descricao)}
         />
       )}
 
@@ -1533,6 +1612,43 @@ function DismissModal({employee, onCancel, onConfirm}: {employee: any; onCancel:
           <button className="primary" onClick={confirm} disabled={saving}>{saving ? "Salvando..." : "Confirmar"}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function OcorrenciaModal({onCancel, onSave}: {onCancel: () => void; onSave: (titulo: string, descricao: string) => Promise<void>}) {
+  const [titulo, setTitulo] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(titulo, descricao);
+    } catch (e: any) {
+      setError(e.message || "Erro ao registrar ocorrência.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card modal-small" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>Nova ocorrência</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <label>Título<input value={titulo} onChange={e => setTitulo(e.target.value)} required placeholder="Ex.: Vazamento na garagem" /></label>
+        <label>Descrição<textarea value={descricao} onChange={e => setDescricao(e.target.value)} rows={4} placeholder="Detalhes da ocorrência" /></label>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Enviando..." : "Registrar"}</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1990,11 +2106,12 @@ function AfastamentoModal({mode, afastamento, funcionarios, onCancel, onSave}: {
   );
 }
 
-function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]}) {
+function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos, ocorrencias, onNovaOcorrencia}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]; ocorrencias: any[]; onNovaOcorrencia: (condominioId: string) => void}) {
   const condominio = condominios.find((c: any) => c.id === me?.condominio_id);
   const meusContratos = contratos.filter((c: any) => c.condominio_id === me?.condominio_id);
   const meusPostos = postos.filter((p: any) => p.condominio_id === me?.condominio_id);
   const meuFinanceiro = lancamentos.filter((l: any) => l.condominio_id === me?.condominio_id);
+  const minhasOcorrencias = ocorrencias.filter((o: any) => o.condominio_id === me?.condominio_id);
   const hojeISO = localDateISO();
   const escalaPorPosto = (postoId: string) => {
     const item = escalaGrid.items.find((e: any) => e.posto?.id === postoId);
@@ -2055,6 +2172,23 @@ function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamen
               </tr>
             ))}
           </tbody></table></div>
+        )}
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <div><h3>Ocorrências</h3><span>{minhasOcorrencias.length} registrada(s)</span></div>
+          <button className="primary" onClick={() => onNovaOcorrencia(condominio.id)}>Nova ocorrência</button>
+        </div>
+        {!minhasOcorrencias.length ? <div className="empty">Nenhuma ocorrência registrada ainda.</div> : (
+          <div className="results">
+            {minhasOcorrencias.map((o: any) => (
+              <article key={o.id} className={"result " + (o.status === "resolvida" ? "" : o.status === "em_andamento" ? "duplicado" : "erro")}>
+                <div><b>{o.titulo}</b><span>{STATUS_OCORRENCIA_LABEL[o.status] || o.status}</span></div>
+                <p>{o.descricao || "Sem descrição"}</p>
+                {o.resposta && <p><b>Resposta:</b> {o.resposta}</p>}
+              </article>
+            ))}
+          </div>
         )}
       </section>
     </>

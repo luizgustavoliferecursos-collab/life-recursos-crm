@@ -659,6 +659,24 @@ class CondominioUpdate(BaseModel):
             raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
         return value
 
+VALID_STATUS_OCORRENCIA = ["aberta", "em_andamento", "resolvida"]
+
+class OcorrenciaCreate(BaseModel):
+    condominio_id: str
+    titulo: str = Field(min_length=1)
+    descricao: str | None = None
+
+class OcorrenciaUpdate(BaseModel):
+    status: str | None = None
+    resposta: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_OCORRENCIA:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_OCORRENCIA)}")
+        return value
+
 VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"]
 PBKDF2_ITERATIONS = 100_000
 
@@ -1386,6 +1404,49 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
         if "condominios_nome_key" in message or "duplicate key" in message.lower():
             raise HTTPException(status_code=409, detail="Ja existe um condominio com este nome.")
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar condominio: {exc}")
+
+@app.get("/api/ocorrencias")
+def list_ocorrencias(condominio_id: str | None = None):
+    try:
+        query = get_supabase().table("ocorrencias").select("*,condominios(nome)").order("created_at", desc=True)
+        if condominio_id:
+            query = query.eq("condominio_id", condominio_id)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar ocorrencias: {exc}")
+
+@app.post("/api/ocorrencias", status_code=201)
+def create_ocorrencia(payload: OcorrenciaCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    try:
+        existing = db.table("condominios").select("id").eq("id", payload.condominio_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
+        result = db.table("ocorrencias").insert(data).execute()
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao registrar ocorrencia: {exc}")
+
+@app.put("/api/ocorrencias/{ocorrencia_id}")
+def update_ocorrencia(ocorrencia_id: str, payload: OcorrenciaUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("ocorrencias").select("id").eq("id", ocorrencia_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Ocorrencia nao encontrada.")
+        result = db.table("ocorrencias").update(data).eq("id", ocorrencia_id).execute()
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar ocorrencia: {exc}")
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
