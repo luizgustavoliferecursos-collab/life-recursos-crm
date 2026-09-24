@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, JSX, useEffect, useMemo, useRef, useState } from "react";
+import { ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
 
 type Dashboard = {
   funcionarios: number;
@@ -23,6 +24,12 @@ const STATUS_VALIDADE_LABEL: Record<string, string> = {
 };
 
 const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+
+const CHART_PALETTE = ["#2563eb", "#38bdf8", "#16a34a", "#f59e0b", "#a855f7", "#94a3b8"];
+const CHART_TOOLTIP_STYLE = {
+  background: "#fff", border: "1px solid #e7e9f0", borderRadius: 10,
+  fontSize: 12, boxShadow: "0 10px 30px rgba(15,15,25,.08)", padding: "8px 12px",
+};
 
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
@@ -381,6 +388,29 @@ export default function Home() {
   const filteredCondos = useMemo(() => condominios.filter(item =>
     JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
   ), [condominios, query]);
+
+  const documentosPorStatus = useMemo(() => {
+    const contagem: Record<string, number> = {};
+    for (const doc of documentos) {
+      const status = doc.status_validade || "nao_aplicavel";
+      contagem[status] = (contagem[status] || 0) + 1;
+    }
+    return Object.entries(contagem)
+      .map(([status, total]) => ({status, nome: STATUS_VALIDADE_LABEL[status] || status, total}))
+      .filter(row => row.total > 0);
+  }, [documentos]);
+
+  const funcionariosPorCargo = useMemo(() => {
+    const contagem: Record<string, number> = {};
+    for (const f of funcionarios) {
+      if (f.status === "inativo") continue;
+      const cargo = f.cargo || "Pendente";
+      contagem[cargo] = (contagem[cargo] || 0) + 1;
+    }
+    return Object.entries(contagem)
+      .map(([cargo, total]) => ({cargo, total}))
+      .sort((a, b) => b.total - a.total);
+  }, [funcionarios]);
 
   function chooseFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.target.files || []).filter(file =>
@@ -800,6 +830,38 @@ export default function Home() {
               <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="bell" size={16} /></div><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
               <article><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
               <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
+            </section>
+            <section className="chart-grid">
+              <div className="panel">
+                <div className="panel-head"><h3>Documentos por status</h3><span>{documentos.length} no total</span></div>
+                {!documentosPorStatus.length ? <div className="empty">Nenhum documento registrado.</div> : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie data={documentosPorStatus} dataKey="total" nameKey="nome" innerRadius={50} outerRadius={85} paddingAngle={2}>
+                        {documentosPorStatus.map((row) => (
+                          <Cell key={row.status} fill={row.status === "vencido" ? "#ef4444" : row.status === "vencendo" ? "#f59e0b" : row.status === "valido" ? "#16a34a" : "#94a3b8"} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                      <Legend wrapperStyle={{fontSize: 12}} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+              <div className="panel">
+                <div className="panel-head"><h3>Funcionários por cargo</h3><span>Ativos</span></div>
+                {!funcionariosPorCargo.length ? <div className="empty">Nenhum funcionário ativo.</div> : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={funcionariosPorCargo}>
+                      <CartesianGrid stroke="#eef0f6" vertical={false} />
+                      <XAxis dataKey="cargo" tick={{fontSize: 11.5, fill: "#6b7280"}} axisLine={{stroke: "#e7e9f0"}} tickLine={false} />
+                      <YAxis allowDecimals={false} tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} width={28} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                      <Bar dataKey="total" name="Funcionários" fill="#2563eb" radius={[6, 6, 0, 0]} maxBarSize={44} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
             </section>
             <section className="grid-two">
               <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
