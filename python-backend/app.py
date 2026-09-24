@@ -68,6 +68,23 @@ def required(name: str) -> str:
         raise RuntimeError(f"Variavel obrigatoria ausente: {name}")
     return value
 
+def clean_drive_id(value: str | None) -> str | None:
+    # ID de pasta colado direto da barra de enderecos do Drive as vezes vem
+    # com querystring/hash grudado (ex.: "...?hl=pt-br"), o que quebra a API.
+    if not value:
+        return None
+    value = re.split(r"[?#]", value.strip(), maxsplit=1)[0].strip()
+    return value.rstrip("/") or None
+
+def drive_folder_id(name: str) -> str | None:
+    return clean_drive_id(env(name))
+
+def require_drive_folder_id(name: str) -> str:
+    value = drive_folder_id(name)
+    if not value:
+        raise RuntimeError(f"Variavel obrigatoria ausente: {name}")
+    return value
+
 def allowed_origins() -> list[str]:
     raw = env("ALLOWED_ORIGINS", "") or ""
     return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
@@ -277,7 +294,7 @@ def get_or_create_subfolder(drive, name: str, parent_id: str) -> str:
     return folder["id"]
 
 def role_folder_id(drive, role: str) -> str:
-    root = required("DRIVE_EMPLOYEES_FOLDER_ID")
+    root = require_drive_folder_id("DRIVE_EMPLOYEES_FOLDER_ID")
     for folder_name, normalized_role in FOLDER_TO_ROLE.items():
         if normalized_role == role:
             found = find_subfolder(drive, folder_name, root)
@@ -287,7 +304,7 @@ def role_folder_id(drive, role: str) -> str:
 
 def destination_folder_id(drive, employee: dict[str, Any]) -> str:
     if employee.get("cargo") == "Pendente":
-        root = required("DRIVE_PENDING_FOLDER_ID")
+        root = require_drive_folder_id("DRIVE_PENDING_FOLDER_ID")
         return get_or_create_subfolder(drive, employee["nome"], root)
     return get_or_create_subfolder(drive, employee["nome"], role_folder_id(drive, employee["cargo"]))
 
@@ -864,21 +881,27 @@ def health():
 def drive_status():
     try:
         drive = get_drive()
-        folders = {}
-        for key, env_name in {
-            "inbox": "DRIVE_INBOX_FOLDER_ID",
-            "funcionarios": "DRIVE_EMPLOYEES_FOLDER_ID",
-            "aguardando_cargo": "DRIVE_PENDING_FOLDER_ID",
-        }.items():
-            folder_id = env(env_name)
-            if not folder_id:
-                folders[key] = {"ok": False, "motivo": "nao configurado"}
-                continue
-            meta = drive.files().get(fileId=folder_id, fields="id,name,trashed").execute()
-            folders[key] = {"ok": not meta.get("trashed", False), "nome": meta.get("name")}
-        return {"status": "ok", "folders": folders}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Google Drive indisponivel: {exc}")
+
+    folders = {}
+    for key, env_name in {
+        "inbox": "DRIVE_INBOX_FOLDER_ID",
+        "funcionarios": "DRIVE_EMPLOYEES_FOLDER_ID",
+        "aguardando_cargo": "DRIVE_PENDING_FOLDER_ID",
+    }.items():
+        folder_id = drive_folder_id(env_name)
+        if not folder_id:
+            folders[key] = {"ok": False, "motivo": "nao configurado"}
+            continue
+        try:
+            meta = drive.files().get(fileId=folder_id, fields="id,name,trashed").execute()
+            folders[key] = {"ok": not meta.get("trashed", False), "nome": meta.get("name")}
+        except Exception as exc:
+            # Um problema numa pasta (ex.: id invalido, sem permissao) nao
+            # deve esconder o status das outras duas.
+            folders[key] = {"ok": False, "motivo": str(exc)}
+    return {"status": "ok", "folders": folders}
 
 @app.get("/api/funcionarios")
 def employees():
