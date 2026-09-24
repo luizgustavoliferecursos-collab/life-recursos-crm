@@ -918,7 +918,7 @@ export default function Home() {
             </label>
             {processing && <div className="progress"><div style={{width: progress + "%"}}></div></div>}
             <button className="primary" disabled={!files.length || processing} onClick={processFiles}>{processing ? "Processando..." : "Processar documentos"}</button>
-            {!!results.length && <div className="results">{results.map((r, i) => <article key={i} className={"result " + r.status}><div><b>{r.arquivo_original}</b><span>{r.status}</span></div><p>{r.mensagem || [r.funcionario, r.documento, r.condominio, r.cargo, r.ano].filter(Boolean).join(" • ")}</p>{r.arquivo_drive_url && <a href={r.arquivo_drive_url} target="_blank">Abrir no Drive</a>}</article>)}</div>}
+            {!!results.length && <div className="results">{results.map((r, i) => <article key={i} className={"result " + r.status}><div><b>{r.arquivo_original}</b><span>{r.status}</span></div><p>{r.mensagem || [r.funcionario, r.documento, r.condominio, r.cargo, r.ano].filter(Boolean).join(" • ")}{r.versao_anterior ? " • renovação (versão anterior linkada)" : ""}</p>{r.arquivo_drive_url && <a href={r.arquivo_drive_url} target="_blank">Abrir no Drive</a>}</article>)}</div>}
           </section>
         )}
 
@@ -1415,7 +1415,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td>{row.arquivo_drive_url ? <a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td>{row.arquivo_drive_url ? <a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
