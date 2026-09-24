@@ -1,6 +1,10 @@
 "use client";
 
 import { ChangeEvent, FormEvent, JSX, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  PieChart, Pie, Cell,
+} from "recharts";
 
 type Dashboard = {
   funcionarios: number;
@@ -53,6 +57,13 @@ function formatMoney(value: any) {
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
 }
 
+const MES_CURTO = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+const CHART_PALETTE = ["#2563eb", "#38bdf8", "#16a34a", "#f59e0b", "#a855f7", "#94a3b8"];
+const CHART_TOOLTIP_STYLE = {
+  background: "#fff", border: "1px solid #e7e9f0", borderRadius: 10,
+  fontSize: 12, boxShadow: "0 10px 30px rgba(15,15,25,.08)", padding: "8px 12px",
+};
+
 // "Hoje" pelo calendario local do navegador, nao UTC: Date().toISOString()
 // converte pra UTC, entao entre 21h e meia-noite no Brasil (UTC-3) mostraria
 // o dia seguinte por engano (escala do dia, EPI, geracao de mensalidade).
@@ -103,6 +114,9 @@ const ICON_PATHS: Record<string, JSX.Element> = {
   "alert-triangle": <><path d="M10.3 3.9 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.9a1 1 0 0 0-1.7 0Z" /><path d="M12 9v4M12 16.5h.01" /></>,
   "check-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M8 12.5l2.5 2.5 5.5-6" /></>,
   "x-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M9 9l6 6M15 9l-6 6" /></>,
+  "trending-up": <><path d="M3 16.5 10 9.5l4 4 7-7.5" /><path d="M15 6h6v6" /></>,
+  "trending-down": <><path d="M3 7.5 10 14.5l4-4 7 7.5" /><path d="M15 18h6v-6" /></>,
+  wallet: <><path d="M3 7a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M17 12h3v3h-3a1.5 1.5 0 0 1 0-3Z" /><path d="M3 8.5h18" /></>,
 };
 
 function Icon({name, size = 18}: {name: string; size?: number}) {
@@ -244,6 +258,7 @@ export default function Home() {
   const [gerarEscalaModal, setGerarEscalaModal] = useState<any | null>(null);
   const [lancamentos, setLancamentos] = useState<any[]>([]);
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
+  const [lancamentoTipoFiltro, setLancamentoTipoFiltro] = useState("");
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
   const [epis, setEpis] = useState<any[]>([]);
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
@@ -306,7 +321,10 @@ export default function Home() {
 
   async function loadFinanceiro() {
     try {
-      const r = await api("/api/financeiro" + (lancamentoFiltro ? `?status=${lancamentoFiltro}` : ""));
+      // Carrega tudo de uma vez; status e tipo agora sao filtrados no cliente
+      // (useMemo abaixo), pra alimentar os KPIs/graficos com o universo
+      // completo e a tabela ficar instantanea ao trocar de filtro.
+      const r = await api("/api/financeiro");
       setLancamentos(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar financeiro.");
@@ -364,7 +382,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => { loadEscalas(semanaInicio); }, [semanaInicio]);
-  useEffect(() => { loadFinanceiro(); }, [lancamentoFiltro]);
 
   useEffect(() => {
     if (me?.papel === "admin") loadUsuarios();
@@ -381,6 +398,78 @@ export default function Home() {
   const filteredCondos = useMemo(() => condominios.filter(item =>
     JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
   ), [condominios, query]);
+
+  const filteredLancamentos = useMemo(() => lancamentos.filter(item =>
+    (!lancamentoFiltro || item.status_calculado === lancamentoFiltro) &&
+    (!lancamentoTipoFiltro || item.tipo === lancamentoTipoFiltro) &&
+    JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
+  ), [lancamentos, lancamentoFiltro, lancamentoTipoFiltro, query]);
+
+  // KPIs e series dos graficos sempre vem do universo COMPLETO de lancamentos
+  // (nao dos filtrados da tabela), pra nao mudar de valor so porque a pessoa
+  // esta olhando uma view filtrada da lista abaixo.
+  const financeiroStats = useMemo(() => {
+    const hoje = new Date();
+    const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+    let aReceber = 0, aPagar = 0, recebidoMes = 0, pagoMes = 0, atrasadoReceita = 0, atrasadoDespesa = 0;
+    const porMes: Record<string, {receita: number; despesa: number}> = {};
+    const porCategoria: Record<string, number> = {};
+    const porCondominio: Record<string, number> = {};
+
+    for (const l of lancamentos) {
+      const valor = Number(l.valor) || 0;
+      const isReceita = l.tipo === "receita";
+      if (l.status_calculado === "pendente" || l.status_calculado === "atrasado") {
+        if (isReceita) aReceber += valor; else aPagar += valor;
+      }
+      if (l.status_calculado === "atrasado") {
+        if (isReceita) atrasadoReceita += valor; else atrasadoDespesa += valor;
+      }
+      if (l.status_calculado === "pago" && (l.data_pagamento || "").slice(0, 7) === mesAtual) {
+        if (isReceita) recebidoMes += valor; else pagoMes += valor;
+      }
+      const mesRef = (l.vencimento || l.data_pagamento || "").slice(0, 7);
+      if (mesRef) {
+        porMes[mesRef] = porMes[mesRef] || {receita: 0, despesa: 0};
+        if (isReceita) porMes[mesRef].receita += valor; else porMes[mesRef].despesa += valor;
+      }
+      if (!isReceita) {
+        const cat = l.categoria || l.descricao || "Outro";
+        porCategoria[cat] = (porCategoria[cat] || 0) + valor;
+      } else {
+        const condo = l.condominios?.nome || "Sem condomínio";
+        porCondominio[condo] = (porCondominio[condo] || 0) + valor;
+      }
+    }
+
+    const mesesOrdenados = Object.keys(porMes).sort().slice(-6);
+    const serieMensal = mesesOrdenados.map(m => {
+      const [ano, mes] = m.split("-");
+      const receita = porMes[m].receita, despesa = porMes[m].despesa;
+      return {mes: `${MES_CURTO[Number(mes) - 1]}/${ano.slice(2)}`, receita, despesa, saldo: receita - despesa};
+    });
+
+    const categoriasOrdenadas = Object.entries(porCategoria).sort((a, b) => b[1] - a[1]);
+    const topCategorias = categoriasOrdenadas.slice(0, 5);
+    const outrosCategorias = categoriasOrdenadas.slice(5).reduce((soma, [, v]) => soma + v, 0);
+    const distribuicaoCategorias = [...topCategorias, ...(outrosCategorias > 0 ? [["Outros", outrosCategorias] as [string, number]] : [])]
+      .map(([nome, valor]) => ({nome, valor}));
+
+    const condominiosOrdenados = Object.entries(porCondominio).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([nome, valor]) => ({nome, valor}));
+
+    return {
+      aReceber, aPagar, recebidoMes, pagoMes, atrasadoReceita, atrasadoDespesa,
+      saldoMes: recebidoMes - pagoMes,
+      inadimplencia: atrasadoReceita + atrasadoDespesa,
+      serieMensal, distribuicaoCategorias, condominiosOrdenados,
+    };
+  }, [lancamentos]);
+
+  function filtrarFinanceiro(status: string, tipo: string) {
+    setLancamentoFiltro(status);
+    setLancamentoTipoFiltro(tipo);
+  }
 
   function chooseFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.target.files || []).filter(file =>
@@ -935,40 +1024,136 @@ export default function Home() {
           </>
         )}
         {tab === "financeiro" && (
-          <section className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>Financeiro</h3>
-                <span>{lancamentos.length} lançamentos</span>
+          <>
+            <section className="stats fin-kpis">
+              <article className={"clickable" + (!lancamentoFiltro && lancamentoTipoFiltro === "receita" ? " active" : "")} onClick={() => filtrarFinanceiro("", "receita")}>
+                <div className="stat-icon green"><Icon name="trending-up" size={17} /></div>
+                <span>A receber</span>
+                <strong>{formatMoney(financeiroStats.aReceber)}</strong>
+                <small>Pendente + atrasado</small>
+              </article>
+              <article className={"clickable" + (!lancamentoFiltro && lancamentoTipoFiltro === "despesa" ? " active" : "")} onClick={() => filtrarFinanceiro("", "despesa")}>
+                <div className="stat-icon"><Icon name="trending-down" size={17} /></div>
+                <span>A pagar</span>
+                <strong>{formatMoney(financeiroStats.aPagar)}</strong>
+                <small>Pendente + atrasado</small>
+              </article>
+              <article className={"clickable" + (lancamentoFiltro === "pago" && lancamentoTipoFiltro === "receita" ? " active" : "")} onClick={() => filtrarFinanceiro("pago", "receita")}>
+                <div className="stat-icon green"><Icon name="wallet" size={17} /></div>
+                <span>Recebido este mês</span>
+                <strong>{formatMoney(financeiroStats.recebidoMes)}</strong>
+                <small>Pago no mês atual</small>
+              </article>
+              <article className={"clickable" + (lancamentoFiltro === "pago" && lancamentoTipoFiltro === "despesa" ? " active" : "")} onClick={() => filtrarFinanceiro("pago", "despesa")}>
+                <div className="stat-icon"><Icon name="wallet" size={17} /></div>
+                <span>Pago este mês</span>
+                <strong>{formatMoney(financeiroStats.pagoMes)}</strong>
+                <small>Despesas quitadas</small>
+              </article>
+              <article>
+                <div className={"stat-icon " + (financeiroStats.saldoMes >= 0 ? "green" : "red")}><Icon name="bar-chart" size={17} /></div>
+                <span>Saldo do mês</span>
+                <strong style={{color: financeiroStats.saldoMes >= 0 ? "var(--green)" : "var(--red)"}}>{formatMoney(financeiroStats.saldoMes)}</strong>
+                <small>Recebido − pago</small>
+              </article>
+              <article className={"alert-stat clickable" + (lancamentoFiltro === "atrasado" && !lancamentoTipoFiltro ? " active" : "")} onClick={() => filtrarFinanceiro("atrasado", "")}>
+                <div className="stat-icon"><Icon name="alert-triangle" size={17} /></div>
+                <span>Inadimplência</span>
+                <strong>{formatMoney(financeiroStats.inadimplencia)}</strong>
+                <small>Vencido sem pagamento</small>
+              </article>
+            </section>
+
+            <section className="chart-grid">
+              <div className="panel">
+                <div className="panel-head"><h3>Receita x despesa</h3><span>Últimos {financeiroStats.serieMensal.length || 6} meses</span></div>
+                {!financeiroStats.serieMensal.length ? <div className="empty">Sem lançamentos com data suficiente.</div> : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <ComposedChart data={financeiroStats.serieMensal}>
+                      <CartesianGrid stroke="#eef0f6" vertical={false} />
+                      <XAxis dataKey="mes" tick={{fontSize: 12, fill: "#6b7280"}} axisLine={{stroke: "#e7e9f0"}} tickLine={false} />
+                      <YAxis tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} width={68} tickFormatter={v => formatMoney(v)} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                      <Legend wrapperStyle={{fontSize: 12}} />
+                      <Bar dataKey="receita" name="Receita" fill="#16a34a" radius={[6, 6, 0, 0]} maxBarSize={28} />
+                      <Bar dataKey="despesa" name="Despesa" fill="#ef4444" radius={[6, 6, 0, 0]} maxBarSize={28} />
+                      <Line type="monotone" dataKey="saldo" name="Saldo" stroke="#2563eb" strokeWidth={2.5} dot={{r: 3}} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-              <div className="row-actions">
-                <select value={lancamentoFiltro} onChange={e => setLancamentoFiltro(e.target.value)}>
-                  <option value="">Todos os status</option>
-                  <option value="pendente">Pendente</option>
-                  <option value="atrasado">Atrasado</option>
-                  <option value="pago">Pago</option>
-                </select>
-                <button onClick={gerarMensalidades}>Gerar cobranças do mês</button>
-                <button className="primary" onClick={() => setLancamentoModal({mode: "create", lancamento: {}})}>Novo lançamento</button>
+              <div className="panel">
+                <div className="panel-head"><h3>Despesas por categoria</h3><span>Distribuição</span></div>
+                {!financeiroStats.distribuicaoCategorias.length ? <div className="empty">Sem despesas registradas.</div> : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie data={financeiroStats.distribuicaoCategorias} dataKey="valor" nameKey="nome" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                        {financeiroStats.distribuicaoCategorias.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />)}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                      <Legend wrapperStyle={{fontSize: 11.5}} layout="vertical" verticalAlign="middle" align="right" />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-            </div>
-            {!lancamentos.length ? <div className="empty">Nenhum lançamento encontrado.</div> : (
-              <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Condomínio/Funcionário</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr></thead><tbody>
-                {lancamentos.map((l: any) => <tr key={l.id}>
-                  <td><span className={"badge " + (l.tipo === "despesa" ? "warn" : "")}>{l.tipo === "receita" ? "Receita" : "Despesa"}</span></td>
-                  <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
-                  <td>{l.categoria || l.descricao || "—"}</td>
-                  <td>{formatMoney(l.valor)}</td>
-                  <td>{l.vencimento || "—"}</td>
-                  <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
-                  <td className="row-actions">
-                    <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
-                    {l.status_calculado !== "pago" && <button className="link-btn" onClick={() => marcarPago(l.id)}>Marcar pago</button>}
-                  </td>
-                </tr>)}
-              </tbody></table></div>
+            </section>
+
+            {!!financeiroStats.condominiosOrdenados.length && (
+              <section className="panel">
+                <div className="panel-head"><h3>Receita por condomínio</h3><span>Top {financeiroStats.condominiosOrdenados.length}</span></div>
+                <ResponsiveContainer width="100%" height={Math.max(180, financeiroStats.condominiosOrdenados.length * 44)}>
+                  <ComposedChart data={financeiroStats.condominiosOrdenados} layout="vertical" margin={{left: 8}}>
+                    <CartesianGrid stroke="#eef0f6" horizontal={false} />
+                    <XAxis type="number" tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} tickFormatter={v => formatMoney(v)} />
+                    <YAxis type="category" dataKey="nome" tick={{fontSize: 12.5, fill: "#13151a"}} axisLine={false} tickLine={false} width={150} />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                    <Bar dataKey="valor" name="Receita" fill="#2563eb" radius={[0, 6, 6, 0]} maxBarSize={22} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </section>
             )}
-          </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Lançamentos</h3>
+                  <span>{filteredLancamentos.length} de {lancamentos.length} lançamentos{(lancamentoFiltro || lancamentoTipoFiltro) ? " (filtrado)" : ""}</span>
+                </div>
+                <div className="row-actions">
+                  <select value={lancamentoTipoFiltro} onChange={e => setLancamentoTipoFiltro(e.target.value)}>
+                    <option value="">Receita e despesa</option>
+                    <option value="receita">Só receita</option>
+                    <option value="despesa">Só despesa</option>
+                  </select>
+                  <select value={lancamentoFiltro} onChange={e => setLancamentoFiltro(e.target.value)}>
+                    <option value="">Todos os status</option>
+                    <option value="pendente">Pendente</option>
+                    <option value="atrasado">Atrasado</option>
+                    <option value="pago">Pago</option>
+                  </select>
+                  {(lancamentoFiltro || lancamentoTipoFiltro) && <button className="link-btn" onClick={() => filtrarFinanceiro("", "")}>Limpar filtros</button>}
+                  <button onClick={gerarMensalidades}>Gerar cobranças do mês</button>
+                  <button className="primary" onClick={() => setLancamentoModal({mode: "create", lancamento: {}})}>Novo lançamento</button>
+                </div>
+              </div>
+              {!filteredLancamentos.length ? <div className="empty">Nenhum lançamento encontrado.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Condomínio/Funcionário</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                  {filteredLancamentos.map((l: any) => <tr key={l.id}>
+                    <td><span className={"badge " + (l.tipo === "despesa" ? "warn" : "")}><Icon name={l.tipo === "receita" ? "trending-up" : "trending-down"} size={12} />{l.tipo === "receita" ? "Receita" : "Despesa"}</span></td>
+                    <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
+                    <td>{l.categoria || l.descricao || "—"}</td>
+                    <td style={{color: l.tipo === "despesa" ? "var(--red)" : "var(--green)", fontWeight: 700}}>{formatMoney(l.valor)}</td>
+                    <td>{l.vencimento || "—"}</td>
+                    <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
+                    <td className="row-actions">
+                      <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
+                      {l.status_calculado !== "pago" && <button className="link-btn" onClick={() => marcarPago(l.id)}>Marcar pago</button>}
+                    </td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+          </>
         )}
         {tab === "epis" && (
           <section className="panel">
