@@ -37,6 +37,17 @@ DOCUMENT_VALIDITY_DAYS = {
     "CertificadoEPI": 365,         # ficha/termo de entrega de EPI, revisado anualmente
     "CertificadoQualificacao": 730,  # curso de vigilante e similares, reciclagem a cada 2 anos
 }
+# Checklist de onboarding: documentos obrigatorios por cargo. Default razoavel
+# pro setor de servicos de condominio - ajuste aqui se a exigencia real da
+# empresa for diferente (varia por CCT/categoria).
+DOCUMENTOS_OBRIGATORIOS_POR_CARGO: dict[str, list[str]] = {
+    "ASG": ["Contrato", "ASO", "CertificadoEPI"],
+    "Diarista": ["Contrato", "ASO", "CertificadoEPI"],
+    "Guardiao": ["Contrato", "ASO", "CertificadoEPI", "CertificadoQualificacao"],
+    "Portaria": ["Contrato", "ASO", "CertificadoEPI"],
+    "Seguranca": ["Contrato", "ASO", "CertificadoEPI", "CertificadoQualificacao"],
+    "Staff": ["Contrato", "ASO"],
+}
 VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
 # Tipos de documento que pertencem ao condominio, nao a um funcionario especifico
@@ -1018,6 +1029,57 @@ def employees():
         return {"items": result.data or []}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar funcionarios: {exc}")
+
+@app.get("/api/onboarding")
+def onboarding_checklist():
+    # So lista quem tem pendencia (documento obrigatorio do cargo ainda nao
+    # registrado) - funcionario com checklist completo nao aparece, pra manter
+    # a lista acionavel.
+    try:
+        db = get_supabase()
+        funcionarios_rows = (
+            db.table("funcionarios")
+            .select("id,nome,cargo,condominio")
+            .eq("status", "ativo")
+            .neq("cargo", "Pendente")
+            .execute()
+            .data
+            or []
+        )
+        if not funcionarios_rows:
+            return {"items": []}
+
+        tipos_por_funcionario: dict[str, set[str]] = {}
+        docs_rows = (
+            db.table("documentos")
+            .select("funcionario_id,tipo_documento")
+            .in_("funcionario_id", [row["id"] for row in funcionarios_rows])
+            .execute()
+            .data
+            or []
+        )
+        for row in docs_rows:
+            fid = row.get("funcionario_id")
+            if fid:
+                tipos_por_funcionario.setdefault(fid, set()).add(row.get("tipo_documento"))
+
+        pendencias = []
+        for funcionario in funcionarios_rows:
+            obrigatorios = DOCUMENTOS_OBRIGATORIOS_POR_CARGO.get(funcionario.get("cargo"), [])
+            registrados = tipos_por_funcionario.get(funcionario["id"], set())
+            faltantes = [tipo for tipo in obrigatorios if tipo not in registrados]
+            if faltantes:
+                pendencias.append({
+                    "funcionario_id": funcionario["id"],
+                    "funcionario": funcionario["nome"],
+                    "cargo": funcionario.get("cargo"),
+                    "condominio": funcionario.get("condominio"),
+                    "documentos_faltantes": faltantes,
+                })
+        pendencias.sort(key=lambda row: (row["cargo"] or "", row["funcionario"]))
+        return {"items": pendencias}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar checklist de onboarding: {exc}")
 
 @app.post("/api/funcionarios", status_code=201)
 def create_employee(payload: FuncionarioCreate):
