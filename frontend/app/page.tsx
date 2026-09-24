@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Dashboard = {
   funcionarios: number;
@@ -51,6 +51,78 @@ const LANCAMENTO_STATUS_LABEL: Record<string, string> = {
 function formatMoney(value: any) {
   const n = Number(value);
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
+}
+
+const ICON_PATHS: Record<string, JSX.Element> = {
+  home: <path d="M3 11.5 12 4l9 7.5M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9" />,
+  bell: <path d="M6 8a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 12 6 8ZM9.5 17.5a2.5 2.5 0 0 0 5 0" />,
+  calendar: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
+  upload: <><path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></>,
+  users: <><circle cx="9" cy="8" r="3.2" /><path d="M2.5 19c0-3 3-5.2 6.5-5.2S15.5 16 15.5 19" /><circle cx="17" cy="8.5" r="2.6" /><path d="M15.5 13.6c2.6.3 4.5 2.2 4.5 5.4" /></>,
+  building: <><rect x="4" y="3" width="12" height="18" rx="1" /><path d="M8 7h1M11 7h1M8 11h1M11 11h1M8 15h1M11 15h1M16 21v-8h4v8" /></>,
+  "file-text": <><path d="M6 2h9l3 3v17H6z" /><path d="M9 12h6M9 16h6M9 8h3" /></>,
+  shield: <path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z" />,
+  briefcase: <><rect x="2.5" y="7" width="19" height="13" rx="2" /><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M2.5 12.5h19" /></>,
+  "dollar-sign": <><path d="M12 2v20" /><path d="M17 6.5c0-1.9-2.2-3.5-5-3.5S7 4.6 7 6.5 9.2 10 12 10s5 1.6 5 3.5-2.2 3.5-5 3.5-5-1.6-5-3.5" /></>,
+  "bar-chart": <path d="M4 20V10M12 20V4M20 20v-7" />,
+  "user-cog": <><circle cx="9" cy="8" r="3.2" /><path d="M2.5 19c0-3 3-5.2 6.5-5.2" /><circle cx="18" cy="16" r="2.3" /><path d="M18 12.7v.9M18 18.4v.9M20.6 14.5l-.8.45M15.4 17.55l-.8.45M20.6 17.5l-.8-.45M15.4 14.45l-.8-.45" /></>,
+  "log-out": <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5M21 12H9" /></>,
+  "alert-triangle": <><path d="M10.3 3.9 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.9a1 1 0 0 0-1.7 0Z" /><path d="M12 9v4M12 16.5h.01" /></>,
+  "check-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M8 12.5l2.5 2.5 5.5-6" /></>,
+  "x-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M9 9l6 6M15 9l-6 6" /></>,
+};
+
+function Icon({name, size = 18}: {name: string; size?: number}) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      {ICON_PATHS[name] || null}
+    </svg>
+  );
+}
+
+function ToastStack({toasts, onDismiss}: {toasts: {id: number; type: "success" | "error"; message: string}[]; onDismiss: (id: number) => void}) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-stack">
+      {toasts.map(t => (
+        <div key={t.id} className={"toast " + t.type}>
+          <Icon name={t.type === "error" ? "x-circle" : "check-circle"} size={16} />
+          <span>{t.message}</span>
+          <button onClick={() => onDismiss(t.id)}>×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({dialog, value, onChange, onClose}: {
+  dialog: {type: "confirm" | "prompt"; title: string; message?: string; danger?: boolean} | null;
+  value: string;
+  onChange: (v: string) => void;
+  onClose: (result: any) => void;
+}) {
+  if (!dialog) return null;
+  return (
+    <div className="modal-backdrop" onClick={() => onClose(dialog.type === "confirm" ? false : null)}>
+      <div className="modal-card modal-small confirm-card" onClick={(e) => e.stopPropagation()}>
+        <div className={"confirm-icon" + (dialog.danger ? " danger" : "")}><Icon name="alert-triangle" size={22} /></div>
+        <h3>{dialog.title}</h3>
+        {dialog.message && <p>{dialog.message}</p>}
+        {dialog.type === "prompt" && (
+          <textarea rows={3} value={value} onChange={e => onChange(e.target.value)} placeholder="Opcional" autoFocus />
+        )}
+        <div className="modal-actions">
+          <button className="link-btn" onClick={() => onClose(dialog.type === "confirm" ? false : null)}>Cancelar</button>
+          <button
+            className={dialog.danger ? "btn-danger" : "primary"}
+            onClick={() => onClose(dialog.type === "confirm" ? true : value)}
+          >
+            Confirmar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function downloadCsv(filename: string, rows: any[], columns: {key: string; label: string}[]) {
@@ -142,6 +214,33 @@ export default function Home() {
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
   const [alertas, setAlertas] = useState<any>({total: 0, vencidos: 0, vencendo: 0, items: []});
   const [relatorios, setRelatorios] = useState<any>({faturamento_por_condominio: [], turnover: {}, absenteismo: {}});
+  const [toasts, setToasts] = useState<{id: number; type: "success" | "error"; message: string}[]>([]);
+  const [dialog, setDialog] = useState<{type: "confirm" | "prompt"; title: string; message?: string; danger?: boolean} | null>(null);
+  const [dialogValue, setDialogValue] = useState("");
+  const dialogResolver = useRef<((v: any) => void) | null>(null);
+
+  function pushToast(message: string, type: "success" | "error" = "success") {
+    const id = Date.now() + Math.random();
+    setToasts(t => [...t, {id, type, message}]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4500);
+  }
+
+  function askConfirm(title: string, opts?: {message?: string; danger?: boolean}): Promise<boolean> {
+    setDialog({type: "confirm", title, message: opts?.message, danger: opts?.danger});
+    return new Promise(resolve => { dialogResolver.current = resolve; });
+  }
+
+  function askPrompt(title: string, message?: string): Promise<string | null> {
+    setDialogValue("");
+    setDialog({type: "prompt", title, message});
+    return new Promise(resolve => { dialogResolver.current = resolve; });
+  }
+
+  function closeDialog(result: any) {
+    setDialog(null);
+    dialogResolver.current?.(result);
+    dialogResolver.current = null;
+  }
 
   async function refresh() {
     setError("");
@@ -300,6 +399,7 @@ export default function Home() {
       });
     }
     setEmployeeModal(null);
+    pushToast(mode === "edit" ? "Funcionário atualizado." : "Funcionário cadastrado.");
     await refresh();
   }
 
@@ -316,6 +416,7 @@ export default function Home() {
       });
     }
     setDismissModal(null);
+    pushToast(isInactive ? "Funcionário reativado." : "Funcionário desligado.");
     await refresh();
   }
 
@@ -342,22 +443,26 @@ export default function Home() {
       });
     }
     setCondominioModal(null);
+    pushToast(mode === "edit" ? "Condomínio atualizado." : "Condomínio cadastrado.");
     await refresh();
   }
 
   async function toggleCondominioStatus(row: any) {
     const next = row.status === "inativo" ? "ativo" : "inativo";
     const action = next === "inativo" ? "inativar" : "reativar";
-    if (!window.confirm(`Confirma ${action} o condomínio "${row.nome}"?`)) return;
+    const ok = await askConfirm(`Confirma ${action} o condomínio?`, {message: `"${row.nome}" será ${action === "inativar" ? "marcado como inativo" : "reativado"}.`, danger: action === "inativar"});
+    if (!ok) return;
     try {
       await api(`/api/condominios/${row.id}`, {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({status: next}),
       });
+      pushToast(`Condomínio ${action === "inativar" ? "inativado" : "reativado"}.`);
       await refresh();
     } catch (e: any) {
       setError(e.message || "Erro ao atualizar condomínio.");
+      pushToast("Erro ao atualizar condomínio.", "error");
     }
   }
 
@@ -384,21 +489,25 @@ export default function Home() {
       });
     }
     setUsuarioModal(null);
+    pushToast(mode === "edit" ? "Usuário atualizado." : "Usuário criado.");
     await loadUsuarios();
   }
 
   async function toggleUsuarioAtivo(row: any) {
     const next = !row.ativo;
-    if (!window.confirm(`Confirma ${next ? "reativar" : "desativar"} o usuário "${row.nome}"?`)) return;
+    const ok = await askConfirm(`Confirma ${next ? "reativar" : "desativar"} o usuário?`, {message: `"${row.nome}" ${next ? "volta a ter acesso" : "perde o acesso"} ao sistema.`, danger: !next});
+    if (!ok) return;
     try {
       await api(`/api/usuarios/${row.id}`, {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ativo: next}),
       });
+      pushToast(`Usuário ${next ? "reativado" : "desativado"}.`);
       await loadUsuarios();
     } catch (e: any) {
       setError(e.message || "Erro ao atualizar usuário.");
+      pushToast("Erro ao atualizar usuário.", "error");
     }
   }
 
@@ -418,6 +527,7 @@ export default function Home() {
       await api("/api/contratos", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
     }
     setContratoModal(null);
+    pushToast(mode === "edit" ? "Contrato atualizado." : "Contrato cadastrado.");
     await refresh();
   }
 
@@ -437,6 +547,7 @@ export default function Home() {
       await api("/api/postos-trabalho", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
     }
     setPostoModal(null);
+    pushToast(mode === "edit" ? "Posto atualizado." : "Posto cadastrado.");
     await refresh();
   }
 
@@ -447,23 +558,28 @@ export default function Home() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({posto_id: postoId, data: escalaData, funcionario_id: funcionarioId || null}),
       });
+      pushToast(funcionarioId ? "Escala atribuída." : "Posto marcado como vago.");
       await loadEscalas(escalaData);
     } catch (e: any) {
       setError(e.message || "Erro ao atribuir escala.");
+      pushToast("Erro ao atribuir escala.", "error");
     }
   }
 
   async function marcarFalta(escalaId: string) {
-    const motivo = window.prompt("Motivo da falta (opcional):") || "";
+    const motivo = await askPrompt("Marcar falta", "Motivo da falta (opcional).");
+    if (motivo === null) return;
     try {
       await api(`/api/escalas/${escalaId}/falta`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({motivo: motivo || null}),
       });
+      pushToast("Falta registrada.");
       await loadEscalas(escalaData);
     } catch (e: any) {
       setError(e.message || "Erro ao marcar falta.");
+      pushToast("Erro ao marcar falta.", "error");
     }
   }
 
@@ -475,9 +591,11 @@ export default function Home() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({substituto_id: substitutoId}),
       });
+      pushToast("Substituição registrada.");
       await loadEscalas(escalaData);
     } catch (e: any) {
       setError(e.message || "Erro ao substituir.");
+      pushToast("Erro ao substituir.", "error");
     }
   }
 
@@ -497,34 +615,40 @@ export default function Home() {
       await api("/api/financeiro", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
     }
     setLancamentoModal(null);
+    pushToast(mode === "edit" ? "Lançamento atualizado." : "Lançamento criado.");
     await refresh();
   }
 
   async function marcarPago(id: string) {
-    if (!window.confirm("Confirma marcar este lançamento como pago hoje?")) return;
+    const ok = await askConfirm("Marcar como pago?", {message: "O lançamento será marcado como pago hoje."});
+    if (!ok) return;
     try {
       await api(`/api/financeiro/${id}/pagar`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
+      pushToast("Lançamento marcado como pago.");
       await loadFinanceiro();
       await refresh();
     } catch (e: any) {
       setError(e.message || "Erro ao marcar pagamento.");
+      pushToast("Erro ao marcar pagamento.", "error");
     }
   }
 
   async function gerarMensalidades() {
     const mes = new Date().toISOString().slice(0, 7);
-    if (!window.confirm(`Gerar cobranças de mensalidade para todos os contratos ativos, referentes a ${mes}?`)) return;
+    const ok = await askConfirm("Gerar cobranças do mês?", {message: `Cria uma cobrança de mensalidade para cada contrato ativo com valor definido, referente a ${mes}.`});
+    if (!ok) return;
     try {
       const r = await api("/api/financeiro/gerar-mensalidades", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({mes}),
       });
-      window.alert(`${r.criados} cobrança(s) gerada(s). ${r.ja_existentes} já existiam. ${r.ignorados_sem_valor} contrato(s) sem valor mensal definido.`);
+      pushToast(`${r.criados} cobrança(s) gerada(s) · ${r.ja_existentes} já existiam${r.ignorados_sem_valor ? ` · ${r.ignorados_sem_valor} sem valor mensal` : ""}.`);
       await loadFinanceiro();
       await refresh();
     } catch (e: any) {
       setError(e.message || "Erro ao gerar mensalidades.");
+      pushToast("Erro ao gerar mensalidades.", "error");
     }
   }
 
@@ -544,6 +668,7 @@ export default function Home() {
       await api("/api/epis", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
     }
     setEpiModal(null);
+    pushToast(mode === "edit" ? "EPI atualizado." : "EPI registrado.");
     await loadEpis();
     await loadAlertas();
   }
@@ -554,20 +679,29 @@ export default function Home() {
   }
 
   const isSindico = me?.papel === "sindico";
-  const tabs = isSindico ? [["meu-condominio", "Meu condomínio"]] : [
-    ["visao", "Visão geral"],
-    ["processar", "Processar documentos"],
-    ["funcionarios", "Funcionários"],
-    ["documentos", "Documentos"],
-    ["condominios", "Condomínios"],
-    ["contratos", "Contratos"],
-    ["postos", "Postos & Escalas"],
-    ["financeiro", "Financeiro"],
-    ["epis", "EPIs"],
-    ["relatorios", "Relatórios"],
-    ["alertas", "Alertas"],
-    ...(me?.papel === "admin" ? [["usuarios", "Usuários"]] : []),
+  const navSections: {label: string; items: [string, string, string][]}[] = isSindico ? [
+    {label: "", items: [["meu-condominio", "Meu condomínio", "building"]]},
+  ] : [
+    {label: "Operação", items: [
+      ["visao", "Visão geral", "home"],
+      ["alertas", "Alertas", "bell"],
+      ["postos", "Postos & Escalas", "calendar"],
+      ["processar", "Processar documentos", "upload"],
+    ]},
+    {label: "Cadastros", items: [
+      ["funcionarios", "Funcionários", "users"],
+      ["condominios", "Condomínios", "building"],
+      ["documentos", "Documentos", "file-text"],
+      ["epis", "EPIs", "shield"],
+    ]},
+    {label: "Negócios", items: [
+      ["contratos", "Contratos", "briefcase"],
+      ["financeiro", "Financeiro", "dollar-sign"],
+      ["relatorios", "Relatórios", "bar-chart"],
+    ]},
+    ...(me?.papel === "admin" ? [{label: "Sistema", items: [["usuarios", "Usuários", "user-cog"]] as [string, string, string][]}] : []),
   ];
+  const tabs = navSections.flatMap(s => s.items);
 
   useEffect(() => {
     if (isSindico && tab !== "meu-condominio") setTab("meu-condominio");
@@ -577,8 +711,27 @@ export default function Home() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">LR</span><div><b>LIFE RECURSOS</b><small>Central de operações</small></div></div>
-        <nav>{tabs.map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{label}{key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}</button>)}</nav>
-        <div className="sidebar-foot"><span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>{me?.nome ? `${me.nome} · ${PAPEL_LABEL[me.papel] || me.papel}` : (health?.status === "ok" ? "Backend online" : "Backend indisponível")}<button onClick={logout}>Sair</button></div>
+        <div className="nav-scroll">
+          {navSections.map(sec => (
+            <div className="nav-section" key={sec.label || "root"}>
+              {sec.label && <div className="nav-section-label">{sec.label}</div>}
+              <nav>
+                {sec.items.map(([key, label, icon]) => (
+                  <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>
+                    <Icon name={icon} size={17} />
+                    <span>{label}</span>
+                    {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
+                  </button>
+                ))}
+              </nav>
+            </div>
+          ))}
+        </div>
+        <div className="sidebar-foot">
+          <span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>
+          <span className="who">{me?.nome ? `${me.nome} · ${PAPEL_LABEL[me.papel] || me.papel}` : (health?.status === "ok" ? "Backend online" : "Backend indisponível")}</span>
+          <button onClick={logout}><Icon name="log-out" size={14} /> Sair</button>
+        </div>
       </aside>
 
       <main className="content">
@@ -593,13 +746,13 @@ export default function Home() {
           <>
             <section className="hero"><div><p className="eyebrow">BASE DO CRM</p><h2>Documentos organizados. Operação pronta para crescer.</h2><p>Acompanhe funcionários, documentos e condomínios em uma única visão.</p></div><button className="primary" onClick={() => setTab("processar")}>Processar documentos</button></section>
             <section className="stats">
-              <article><span>Funcionários</span><strong>{dashboard?.funcionarios ?? "—"}</strong><small>{dashboard?.aguardando_cargo ?? 0} aguardando cargo</small></article>
-              <article><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
-              <article><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
-              <article><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
-              <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
-              <article><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
-              <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
+              <article><div className="stat-icon"><Icon name="users" size={16} /></div><span>Funcionários</span><strong>{dashboard?.funcionarios ?? "—"}</strong><small>{dashboard?.aguardando_cargo ?? 0} aguardando cargo</small></article>
+              <article><div className="stat-icon"><Icon name="file-text" size={16} /></div><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
+              <article><div className="stat-icon"><Icon name="building" size={16} /></div><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
+              <article><div className="stat-icon"><Icon name="upload" size={16} /></div><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
+              <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="bell" size={16} /></div><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
+              <article><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
+              <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
             </section>
             <section className="grid-two">
               <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
@@ -962,6 +1115,9 @@ export default function Home() {
           onSave={saveEpi}
         />
       )}
+
+      <ConfirmDialog dialog={dialog} value={dialogValue} onChange={setDialogValue} onClose={closeDialog} />
+      <ToastStack toasts={toasts} onDismiss={(id) => setToasts(t => t.filter(x => x.id !== id))} />
     </div>
   );
 }
