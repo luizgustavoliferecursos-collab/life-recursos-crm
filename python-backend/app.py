@@ -815,6 +815,18 @@ def document_already_registered(
             return row
     return None
 
+def find_previous_document(db, doc_type: str, *, funcionario_id: Any = None, condominio_id: Any = None) -> dict[str, Any] | None:
+    # Documento mais recente do mesmo tipo pro mesmo dono (funcionario ou
+    # condominio), pra linkar a nova versao ao invez de deixar um registro
+    # solto (ex.: ASO renovado aponta pro ASO anterior).
+    query = db.table("documentos").select("id").eq("tipo_documento", doc_type)
+    if funcionario_id:
+        query = query.eq("funcionario_id", funcionario_id)
+    if condominio_id:
+        query = query.eq("condominio_id", condominio_id)
+    result = query.order("created_at", desc=True).limit(1).execute()
+    return result.data[0] if result.data else None
+
 def upload_pdf_to_drive(drive, data: bytes, file_name: str, folder_id: str) -> dict[str, Any]:
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype="application/pdf", resumable=True)
     return drive.files().create(
@@ -875,6 +887,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
         drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
 
+        anterior = find_previous_document(db, doc_type, condominio_id=condominio["id"])
         doc_record: dict[str, Any] = {
             "condominio_id": condominio["id"],
             "tipo_documento": doc_type,
@@ -883,6 +896,8 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "arquivo_drive_url": drive_url,
             "origem": "automacao",
         }
+        if anterior:
+            doc_record["versao_anterior_id"] = anterior["id"]
         if data_validade:
             doc_record["data_validade"] = data_validade.isoformat()
         try:
@@ -903,6 +918,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "checksum": checksum,
             "data_validade": data_validade.isoformat() if data_validade else None,
             "status_validade": compute_status_validade(data_validade),
+            "versao_anterior": bool(anterior),
         }
 
     employee_name = info.get("nome_funcionario")
@@ -932,6 +948,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
     drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
 
+    anterior = find_previous_document(db, doc_type, funcionario_id=employee["id"])
     doc_record: dict[str, Any] = {
         "funcionario_id": employee["id"],
         "tipo_documento": doc_type,
@@ -940,6 +957,8 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "arquivo_drive_url": drive_url,
         "origem": "automacao",
     }
+    if anterior:
+        doc_record["versao_anterior_id"] = anterior["id"]
     if data_validade:
         doc_record["data_validade"] = data_validade.isoformat()
     try:
@@ -962,6 +981,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "checksum": checksum,
         "data_validade": data_validade.isoformat() if data_validade else None,
         "status_validade": compute_status_validade(data_validade),
+        "versao_anterior": bool(anterior),
     }
 
 @app.get("/health")
