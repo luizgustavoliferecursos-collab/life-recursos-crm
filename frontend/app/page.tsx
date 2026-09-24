@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, JSX, useEffect, useMemo, useRef, useState } from "react";
 
 type Dashboard = {
   funcionarios: number;
