@@ -1192,7 +1192,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
     type === "condos" ? <><th>Condomínio</th><th>Cidade</th><th>Síndico</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
-    <><th>Documento</th><th>Funcionário / Condomínio</th><th>Ano</th><th>Status</th></>
+    <><th>Documento</th><th>Funcionário / Condomínio</th><th>Ano</th><th>Status</th><th>Arquivo</th></>
   }</tr></thead><tbody>{rows.map((row, i) => <tr key={row.id || i}>{
     type === "employees" ? <>
       <td>{row.nome}</td>
@@ -1214,7 +1214,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td>{row.arquivo_drive_url ? <a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
