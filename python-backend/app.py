@@ -670,6 +670,12 @@ class EscalaFalta(BaseModel):
 class EscalaSubstituir(BaseModel):
     substituto_id: str
 
+class EscalaRecorrencia(BaseModel):
+    posto_id: str
+    funcionario_id: str
+    data_inicio: date
+    dias: int = Field(ge=1, le=90)
+
 VALID_TIPO_LANCAMENTO = ["receita", "despesa"]
 VALID_STATUS_LANCAMENTO = ["pendente", "pago", "atrasado"]
 VALID_ORIGEM_LANCAMENTO = ["contrato", "folha", "outro"]
@@ -1171,32 +1177,39 @@ def update_posto(posto_id: str, payload: PostoUpdate):
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar posto de trabalho: {exc}")
 
 @app.get("/api/escalas")
-def list_escalas(data: str | None = None, condominio_id: str | None = None):
+def list_escalas(data: str | None = None, dias: int = 1, condominio_id: str | None = None):
     db = get_supabase()
-    alvo = data or hoje_brasil().isoformat()
+    dias = max(1, min(dias, 31))
+    try:
+        inicio = date.fromisoformat(data) if data else hoje_brasil()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Data invalida. Use o formato YYYY-MM-DD.")
+    datas = [(inicio + timedelta(days=i)).isoformat() for i in range(dias)]
+    fim_exclusivo = (inicio + timedelta(days=dias)).isoformat()
     try:
         postos_query = db.table("postos_trabalho").select("*,condominios(nome)").eq("status", "ativo").order("nome")
         if condominio_id:
             postos_query = postos_query.eq("condominio_id", condominio_id)
         postos = postos_query.execute().data or []
         posto_ids = [p["id"] for p in postos]
-        escalas_do_dia = []
+        escalas_periodo = []
         if posto_ids:
-            escalas_do_dia = (
+            escalas_periodo = (
                 db.table("escalas")
                 .select("*,funcionario:funcionarios!escalas_funcionario_id_fkey(nome),substituto:funcionarios!escalas_substituto_id_fkey(nome)")
-                .eq("data", alvo)
+                .gte("data", inicio.isoformat())
+                .lt("data", fim_exclusivo)
                 .in_("posto_id", posto_ids)
                 .execute()
                 .data
                 or []
             )
-        escala_por_posto = {row["posto_id"]: row for row in escalas_do_dia}
+        escala_por_posto_dia = {(row["posto_id"], row["data"]): row for row in escalas_periodo}
         items = []
         for posto in postos:
-            escala = escala_por_posto.get(posto["id"])
-            items.append({"posto": posto, "escala": escala})
-        return {"data": alvo, "items": items}
+            escalas_por_dia = {dia: escala_por_posto_dia.get((posto["id"], dia)) for dia in datas}
+            items.append({"posto": posto, "escalas_por_dia": escalas_por_dia})
+        return {"datas": datas, "items": items}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar escalas: {exc}")
 
@@ -1211,10 +1224,78 @@ def set_escala(payload: EscalaAtribuir):
         "substituto_id": None,
     }
     try:
+        aviso = None
+        if payload.funcionario_id:
+            conflito = (
+                db.table("escalas")
+                .select("posto_id,postos_trabalho(nome)")
+                .eq("funcionario_id", payload.funcionario_id)
+                .eq("data", payload.data.isoformat())
+                .neq("posto_id", payload.posto_id)
+                .limit(1)
+                .execute()
+            )
+            if conflito.data:
+                outro = (conflito.data[0].get("postos_trabalho") or {}).get("nome") or "outro posto"
+                aviso = f"Este funcionario ja esta escalado em \"{outro}\" neste mesmo dia."
         result = db.table("escalas").upsert(data, on_conflict="posto_id,data").execute()
-        return result.data[0]
+        response = dict(result.data[0])
+        if aviso:
+            response["aviso"] = aviso
+        return response
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao definir escala: {exc}")
+
+@app.post("/api/escalas/gerar-recorrencia")
+def gerar_recorrencia(payload: EscalaRecorrencia):
+    db = get_supabase()
+    posto_result = db.table("postos_trabalho").select("turno").eq("id", payload.posto_id).limit(1).execute()
+    if not posto_result.data:
+        raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
+    turno = (posto_result.data[0].get("turno") or "").lower()
+
+    def dia_de_trabalho(offset: int, dia: date) -> bool:
+        if "12x36" in turno:
+            return offset % 2 == 0
+        if "6x1" in turno:
+            return offset % 7 != 6
+        if "comercial" in turno:
+            return dia.weekday() < 5
+        return True  # turno sem padrao reconhecido: escala todo dia do periodo
+
+    fim_exclusivo = payload.data_inicio + timedelta(days=payload.dias)
+    existentes = (
+        db.table("escalas")
+        .select("data")
+        .eq("posto_id", payload.posto_id)
+        .gte("data", payload.data_inicio.isoformat())
+        .lt("data", fim_exclusivo.isoformat())
+        .execute()
+    )
+    dias_ocupados = {row["data"] for row in (existentes.data or [])}
+
+    novas_escalas = []
+    for offset in range(payload.dias):
+        dia = payload.data_inicio + timedelta(days=offset)
+        if dia.isoformat() in dias_ocupados or not dia_de_trabalho(offset, dia):
+            continue
+        novas_escalas.append({
+            "posto_id": payload.posto_id,
+            "data": dia.isoformat(),
+            "funcionario_id": payload.funcionario_id,
+            "status": "previsto",
+        })
+
+    try:
+        if novas_escalas:
+            db.table("escalas").insert(novas_escalas).execute()
+        return {
+            "criados": len(novas_escalas),
+            "dias_analisados": payload.dias,
+            "ja_ocupados": len(dias_ocupados),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao gerar escala automatica: {exc}")
 
 @app.post("/api/escalas/{escala_id}/falta")
 def marcar_falta(escala_id: str, payload: EscalaFalta):
@@ -1439,6 +1520,35 @@ def notificacoes():
             "detalhe": f"Vence em {row.get('data_validade')}" if row.get("data_validade") else "Vencido",
             "data": row.get("data_validade"),
         })
+
+    postos_ativos = (
+        db.table("postos_trabalho").select("id,nome,condominios(nome)").eq("status", "ativo").execute().data or []
+    )
+    if postos_ativos:
+        posto_ids = [p["id"] for p in postos_ativos]
+        amanha = hoje + timedelta(days=1)
+        escalas_proximas = (
+            db.table("escalas")
+            .select("posto_id,data,funcionario_id")
+            .in_("posto_id", posto_ids)
+            .in_("data", [hoje.isoformat(), amanha.isoformat()])
+            .execute()
+            .data
+            or []
+        )
+        cobertura = {(row["posto_id"], row["data"]): row.get("funcionario_id") for row in escalas_proximas}
+        for posto in postos_ativos:
+            for dia, urgencia in ((hoje, "vencido"), (amanha, "vencendo")):
+                if cobertura.get((posto["id"], dia.isoformat())):
+                    continue
+                nome_cond = (posto.get("condominios") or {}).get("nome") or "Condominio desconhecido"
+                alertas.append({
+                    "tipo": "posto_vago",
+                    "urgencia": urgencia,
+                    "titulo": f"Posto \"{posto['nome']}\" sem cobertura",
+                    "detalhe": f"{nome_cond} — {dia.isoformat()}",
+                    "data": dia.isoformat(),
+                })
 
     contratos = (
         db.table("contratos_condominio")
