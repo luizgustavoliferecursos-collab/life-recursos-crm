@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCrm } from "../../lib/CrmContext";
 import { EmptyState } from "../../components/EmptyState";
+import { cargoLabel } from "../../lib/ui";
 
 export default function OnboardingPage() {
   const {onboarding} = useCrm();
@@ -18,7 +19,7 @@ export default function OnboardingPage() {
         <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Cargo</th><th>Condomínio</th><th>Documentos faltantes</th></tr></thead><tbody>
           {onboarding.map((o: any) => <tr key={o.funcionario_id}>
             <td><Link href={`/funcionarios/${o.funcionario_id}`} className="link-btn">{o.funcionario}</Link></td>
-            <td><span className="badge">{o.cargo}</span></td>
+            <td><span className="badge">{cargoLabel(o.cargo)}</span></td>
             <td>{o.condominio || "—"}</td>
             <td>{o.documentos_faltantes.map((d: string) => <span key={d} className="badge missing" style={{marginRight: 6}}>{d} · Faltando</span>)}</td>
           </tr>)}

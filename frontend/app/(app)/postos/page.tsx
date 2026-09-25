@@ -1,7 +1,7 @@
 "use client";
 
 import { useCrm } from "../../lib/CrmContext";
-import { addDaysISO, formatDiaCurto, localDateISO, mondayOf } from "../../lib/ui";
+import { addDaysISO, formatDiaCurto, localDateISO, mondayOf, cargoLabel } from "../../lib/ui";
 import { EmptyState } from "../../components/EmptyState";
 
 export default function PostosPage() {
@@ -26,7 +26,7 @@ export default function PostosPage() {
             {postos.map((p: any) => <tr key={p.id}>
               <td>{p.nome}</td>
               <td>{p.condominios?.nome || "—"}</td>
-              <td>{p.cargo}</td>
+              <td>{cargoLabel(p.cargo)}</td>
               <td>{p.turno || "—"}</td>
               <td><span className={"badge " + (p.status === "inativo" ? "warn" : "")}>{p.status === "inativo" ? "Inativo" : "Ativo"}</span></td>
               <td className="row-actions"><button className="link-btn" onClick={() => setPostoModal({mode: "edit", posto: p})}>Editar</button></td>

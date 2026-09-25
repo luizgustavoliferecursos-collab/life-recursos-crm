@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CARGOS, statusValidadeClass, statusValidadeLabel } from "../lib/ui";
+import { CARGOS, statusValidadeClass, statusValidadeLabel, cargoLabel, tipoDocLabel } from "../lib/ui";
 import { EmptyState } from "./EmptyState";
 
 export function CargoQuickSelect({row, onConfirm}: {row: any; onConfirm: (id: string, cargo: string) => Promise<void>}) {
@@ -21,7 +21,7 @@ export function CargoQuickSelect({row, onConfirm}: {row: any; onConfirm: (id: st
   return (
     <div className="row-actions">
       <select value={cargo} onChange={e => setCargo(e.target.value)} style={{padding: "6px 8px"}}>
-        {CARGOS.filter(c => c !== "Pendente").map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        {CARGOS.filter(c => c !== "Pendente").map(opt => <option key={opt} value={opt}>{cargoLabel(opt)}</option>)}
       </select>
       <button type="button" className="link-btn" disabled={saving} onClick={confirmar}>{saving ? "Confirmando..." : "Confirmar"}</button>
     </div>
@@ -50,7 +50,7 @@ export function DataTable({rows, type, onEdit, onToggleStatus, onPreview, onConf
       <td>{row.cargo === "Pendente" && onConfirmCargo ? (
         <CargoQuickSelect row={row} onConfirm={onConfirmCargo} />
       ) : (
-        <span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{row.cargo || "—"}</span>
+        <span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{cargoLabel(row.cargo)}</span>
       )}</td>
       <td>{row.condominio || "—"}</td>
       <td><span className={"badge " + (row.status === "inativo" ? "warn" : "")}>{row.status === "inativo" ? "Desligado" : "Ativo"}</span></td>
@@ -69,6 +69,6 @@ export function DataTable({rows, type, onEdit, onToggleStatus, onPreview, onConf
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome ? (row.funcionario_id ? <Link href={`/funcionarios/${row.funcionario_id}`} className="link-btn">{row.funcionarios.nome}</Link> : row.funcionarios.nome) : (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={statusValidadeClass(row.status_validade)}>{statusValidadeLabel(row.status_validade)}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
+    <><td>{tipoDocLabel(row.tipo_documento, row.arquivo_nome || "Documento")}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome ? (row.funcionario_id ? <Link href={`/funcionarios/${row.funcionario_id}`} className="link-btn">{row.funcionarios.nome}</Link> : row.funcionarios.nome) : (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={statusValidadeClass(row.status_validade)}>{statusValidadeLabel(row.status_validade)}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }

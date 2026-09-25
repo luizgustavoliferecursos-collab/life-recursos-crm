@@ -95,8 +95,19 @@ export function AppShell({children}: {children: React.ReactNode}) {
     {key: "root", label: "", items: [["/minha-escala", "Minha escala", "calendar"]]},
   ] : NAV_GROUPS.filter(g => (ROLE_GROUPS[me?.papel || "admin"] || ROLE_GROUPS.admin).includes(g.key));
 
-  const flatItems = navSections.flatMap(s => s.items);
-  const currentTitle = flatItems.find(([href]) => href === pathname)?.[1] || "";
+  // Rota atual: o item mais especifico que casa com o caminho (ex.: /funcionarios/123
+  // continua marcando "Funcionarios" no menu e no titulo).
+  const matchScore = (href: string) => (pathname === href ? 10000 : pathname.startsWith(href + "/") ? href.length : -1);
+  let activeHref = "";
+  let activeGroup = "";
+  for (const sec of navSections) {
+    for (const [href] of sec.items) {
+      if (matchScore(href) > matchScore(activeHref || "~")) { activeHref = href; activeGroup = sec.label; }
+    }
+  }
+  const currentTitle = navSections.flatMap(s => s.items).find(([href]) => href === activeHref)?.[1] || "";
+  const initials = (me?.nome || "?").split(" ").filter(Boolean).slice(0, 2).map((p: string) => p[0]).join("").toUpperCase();
+  const online = health?.status === "ok";
 
   return (
     <div className="app-shell">
@@ -106,7 +117,7 @@ export function AppShell({children}: {children: React.ReactNode}) {
       {mobileNavOpen && <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
 
       <aside className={"sidebar" + (mobileNavOpen ? " open" : "")}>
-        <div className="brand"><span className="brand-mark">LR</span><div><b>LIFE RECURSOS</b><small>Central de operações</small></div></div>
+        <div className="brand"><span className="brand-mark">LR</span><div><b>Life Recursos</b><small>Central de operações</small></div></div>
         <div className="nav-scroll">
           {navSections.map(sec => {
             const collapsed = !!sec.label && !!collapsedGroups[sec.key];
@@ -125,7 +136,7 @@ export function AppShell({children}: {children: React.ReactNode}) {
                 {!collapsed && (
                   <nav>
                     {sec.items.filter(([href]) => href !== "/configuracoes/usuarios" || me?.papel === "admin").map(([href, label, icon]) => (
-                      <Link key={href} href={href} className={pathname === href ? "active" : ""}>
+                      <Link key={href} href={href} className={"nav-link" + (href === activeHref ? " active" : "")}>
                         <Icon name={icon} size={17} />
                         <span>{label}</span>
                         {href === "/alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
@@ -140,15 +151,15 @@ export function AppShell({children}: {children: React.ReactNode}) {
           })}
         </div>
         <div className="sidebar-foot">
-          <span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>
-          <span className="who">{me?.nome ? `${me.nome} · ${PAPEL_LABEL[me.papel] || me.papel}` : (health?.status === "ok" ? "Backend online" : "Backend indisponível")}</span>
-          <button onClick={logout}><Icon name="log-out" size={14} /> Sair</button>
+          <span className="user-avatar">{initials}<i className={"status-dot" + (online ? " online" : "")} title={online ? "Sistema online" : "Sistema indisponível"} /></span>
+          <span className="who"><b>{me?.nome || "Usuário"}</b><small>{online ? (me?.papel ? (PAPEL_LABEL[me.papel] || me.papel) : "") : "Sistema indisponível"}</small></span>
+          <button onClick={logout} title="Sair" aria-label="Sair"><Icon name="log-out" size={15} /></button>
         </div>
       </aside>
 
       <main className="content">
         <header className="topbar">
-          <div><p className="eyebrow">GESTÃO</p><h1>{currentTitle}</h1></div>
+          <div><p className="eyebrow">{activeGroup || "Life Recursos"}</p><h1>{currentTitle}</h1></div>
           <GlobalSearch funcionarios={funcionarios} documentos={crm.documentos} condominios={condominios} />
         </header>
 

@@ -2,12 +2,23 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { normalize } from "../lib/ui";
+import { Icon, normalize, tipoDocLabel } from "../lib/ui";
 
 export function GlobalSearch({funcionarios, documentos, condominios}: {funcionarios: any[]; documentos: any[]; condominios: any[]}) {
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Atalho Ctrl+K / Cmd+K para focar a busca, padrao dos SaaS modernos.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); inputRef.current?.focus(); }
+      if (e.key === "Escape") { setOpen(false); inputRef.current?.blur(); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
@@ -39,7 +50,10 @@ export function GlobalSearch({funcionarios, documentos, condominios}: {funcionar
 
   return (
     <div className="global-search" ref={boxRef}>
+      <span className="search-icon"><Icon name="search" size={15} /></span>
+      <kbd className="search-kbd">Ctrl K</kbd>
       <input
+        ref={inputRef}
         className="search"
         placeholder="Buscar no sistema"
         value={term}
@@ -82,7 +96,7 @@ export function GlobalSearch({funcionarios, documentos, condominios}: {funcionar
                       className="search-result"
                       onClick={() => setOpen(false)}
                     >
-                      <b>{d.tipo_documento || d.arquivo_nome || "Documento"}</b><span>{d.funcionarios?.nome || d.condominios?.nome || ""}</span>
+                      <b>{tipoDocLabel(d.tipo_documento, d.arquivo_nome || "Documento")}</b><span>{d.funcionarios?.nome || d.condominios?.nome || ""}</span>
                     </Link>
                   ))}
                 </div>

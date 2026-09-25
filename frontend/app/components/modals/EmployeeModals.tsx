@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { EMPLOYEE_FORM_FIELDS } from "../../lib/ui";
+import { EMPLOYEE_FORM_FIELDS, cargoLabel } from "../../lib/ui";
 
 export function EmployeeModal({mode, employee, onCancel, onSave}: {mode: "create" | "edit"; employee: any; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
   const [form, setForm] = useState<Record<string, any>>(() => {
@@ -38,7 +38,7 @@ export function EmployeeModal({mode, employee, onCancel, onSave}: {mode: "create
               {field.kind === "select" ? (
                 <select value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} required={field.key === "cargo"}>
                   <option value="">—</option>
-                  {field.options?.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  {field.options?.map(opt => <option key={opt} value={opt}>{field.key === "cargo" ? cargoLabel(opt) : opt}</option>)}
                 </select>
               ) : field.kind === "textarea" ? (
                 <textarea value={form[field.key]} onChange={e => setForm(f => ({...f, [field.key]: e.target.value}))} rows={2} />
