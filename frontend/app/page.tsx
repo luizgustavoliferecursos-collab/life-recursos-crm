@@ -93,6 +93,17 @@ const LANCAMENTO_STATUS_LABEL: Record<string, string> = {
   pago: "Pago",
   atrasado: "Atrasado",
 };
+const SERVICO_LABEL: Record<string, string> = {
+  anthropic: "Claude (Anthropic)",
+  supabase: "Supabase",
+  google: "Google Drive (credenciais)",
+  drive_folders: "Pastas do Drive (IDs)",
+};
+const DRIVE_FOLDER_LABEL: Record<string, string> = {
+  documentos_condominio: "Documentos do condomínio",
+  funcionarios: "Funcionários",
+  aguardando_cargo: "Aguardando cargo",
+};
 
 function formatMoney(value: any) {
   const n = Number(value);
@@ -184,6 +195,8 @@ const ICON_PATHS: Record<string, JSX.Element> = {
   "trending-up": <><path d="M3 16.5 10 9.5l4 4 7-7.5" /><path d="M15 6h6v6" /></>,
   "trending-down": <><path d="M3 7.5 10 14.5l4-4 7 7.5" /><path d="M15 18h6v-6" /></>,
   wallet: <><path d="M3 7a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M17 12h3v3h-3a1.5 1.5 0 0 1 0-3Z" /><path d="M3 8.5h18" /></>,
+  link: <><path d="M9 15l6-6" /><path d="M8 13l-2.5 2.5a3.5 3.5 0 1 0 5 5L13 18" /><path d="M16 11l2.5-2.5a3.5 3.5 0 1 0-5-5L11 6" /></>,
+  "chevron-down": <path d="M6 9l6 6 6-6" />,
 };
 
 function Icon({name, size = 18}: {name: string; size?: number}) {
@@ -340,6 +353,7 @@ export default function Home() {
   const [toasts, setToasts] = useState<{id: number; type: "success" | "error"; message: string}[]>([]);
   const [dialog, setDialog] = useState<{type: "confirm" | "prompt"; title: string; message?: string; danger?: boolean} | null>(null);
   const [dialogValue, setDialogValue] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const dialogResolver = useRef<((v: any) => void) | null>(null);
 
   function pushToast(message: string, type: "success" | "error" = "success") {
@@ -1035,36 +1049,50 @@ export default function Home() {
 
   const isSindico = me?.papel === "sindico";
   const isColaborador = me?.papel === "colaborador";
-  const navSections: {label: string; items: [string, string, string][]}[] = isSindico ? [
-    {label: "", items: [["meu-condominio", "Meu condomínio", "building"]]},
-  ] : isColaborador ? [
-    {label: "", items: [["minha-escala", "Minha escala", "calendar"]]},
-  ] : [
-    {label: "Operação", items: [
+  // Cada perfil ve so os grupos relevantes pro seu dia a dia (admin ve tudo).
+  // Isso e so organizacao de menu: o backend nao restringe rota por papel.
+  const ROLE_GROUPS: Record<string, string[]> = {
+    admin: ["painel", "pessoas", "documentos", "condominios", "financeiro", "configuracoes"],
+    rh: ["painel", "pessoas", "documentos"],
+    financeiro: ["painel", "financeiro", "condominios", "documentos"],
+    operacional: ["painel", "condominios", "documentos"],
+  };
+  const NAV_GROUPS: {key: string; label: string; items: [string, string, string][]}[] = [
+    {key: "painel", label: "Painel", items: [
       ["visao", "Visão geral", "home"],
       ["alertas", "Alertas", "bell"],
-      ["ocorrencias", "Ocorrências", "alert-triangle"],
-      ["postos", "Postos & Escalas", "calendar"],
-      ["processar", "Processar documentos", "upload"],
     ]},
-    {label: "Cadastros", items: [
+    {key: "pessoas", label: "Pessoas", items: [
       ["funcionarios", "Funcionários", "users"],
       ["onboarding", "Onboarding", "check-circle"],
-      ["condominios", "Condomínios", "building"],
-      ["documentos", "Documentos", "file-text"],
       ["epis", "EPIs", "shield"],
       ["afastamentos", "Férias & Afastamentos", "umbrella"],
     ]},
-    {label: "Negócios", items: [
+    {key: "documentos", label: "Documentos", items: [
+      ["processar", "Enviar", "upload"],
+      ["documentos", "Todos os documentos", "file-text"],
+    ]},
+    {key: "condominios", label: "Condomínios", items: [
+      ["condominios", "Cadastro", "building"],
+      ["postos", "Postos & Escalas", "calendar"],
+      ["ocorrencias", "Ocorrências", "alert-triangle"],
       ["contratos", "Contratos", "briefcase"],
-      ["financeiro", "Financeiro", "dollar-sign"],
+    ]},
+    {key: "financeiro", label: "Financeiro", items: [
+      ["financeiro", "Lançamentos", "dollar-sign"],
       ["relatorios", "Relatórios", "bar-chart"],
     ]},
-    ...(me?.papel === "admin" ? [{label: "Sistema", items: [
+    {key: "configuracoes", label: "Configurações", items: [
       ["usuarios", "Usuários", "user-cog"],
       ["auditoria", "Auditoria", "activity"],
-    ] as [string, string, string][]}] : []),
+      ["integracoes", "Status das integrações", "link"],
+    ]},
   ];
+  const navSections = isSindico ? [
+    {key: "root", label: "", items: [["meu-condominio", "Meu condomínio", "building"] as [string, string, string]]},
+  ] : isColaborador ? [
+    {key: "root", label: "", items: [["minha-escala", "Minha escala", "calendar"] as [string, string, string]]},
+  ] : NAV_GROUPS.filter(g => (ROLE_GROUPS[me?.papel || "admin"] || ROLE_GROUPS.admin).includes(g.key));
   const tabs = navSections.flatMap(s => s.items);
 
   useEffect(() => {
@@ -1077,22 +1105,36 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">LR</span><div><b>LIFE RECURSOS</b><small>Central de operações</small></div></div>
         <div className="nav-scroll">
-          {navSections.map(sec => (
-            <div className="nav-section" key={sec.label || "root"}>
-              {sec.label && <div className="nav-section-label">{sec.label}</div>}
-              <nav>
-                {sec.items.map(([key, label, icon]) => (
-                  <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>
-                    <Icon name={icon} size={17} />
-                    <span>{label}</span>
-                    {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
-                    {key === "onboarding" && onboarding.length > 0 && <span className="nav-badge">{onboarding.length}</span>}
-                    {key === "ocorrencias" && ocorrencias.filter((o: any) => o.status !== "resolvida").length > 0 && <span className="nav-badge">{ocorrencias.filter((o: any) => o.status !== "resolvida").length}</span>}
+          {navSections.map(sec => {
+            const collapsed = !!sec.label && !!collapsedGroups[sec.key];
+            return (
+              <div className={"nav-section" + (collapsed ? " collapsed" : "")} key={sec.key}>
+                {sec.label && (
+                  <button
+                    type="button"
+                    className="nav-section-label"
+                    onClick={() => setCollapsedGroups(s => ({...s, [sec.key]: !s[sec.key]}))}
+                  >
+                    <span>{sec.label}</span>
+                    <Icon name="chevron-down" size={12} />
                   </button>
-                ))}
-              </nav>
-            </div>
-          ))}
+                )}
+                {!collapsed && (
+                  <nav>
+                    {sec.items.filter(([key]) => key !== "usuarios" || me?.papel === "admin").map(([key, label, icon]) => (
+                      <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>
+                        <Icon name={icon} size={17} />
+                        <span>{label}</span>
+                        {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
+                        {key === "onboarding" && onboarding.length > 0 && <span className="nav-badge">{onboarding.length}</span>}
+                        {key === "ocorrencias" && ocorrencias.filter((o: any) => o.status !== "resolvida").length > 0 && <span className="nav-badge">{ocorrencias.filter((o: any) => o.status !== "resolvida").length}</span>}
+                      </button>
+                    ))}
+                  </nav>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="sidebar-foot">
           <span className={"dot " + (health?.status === "ok" ? "online" : "")}></span>
@@ -1117,7 +1159,6 @@ export default function Home() {
               <article className={(dashboard?.afastados_hoje ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="umbrella" size={16} /></div><span>Afastados hoje</span><strong>{dashboard?.afastados_hoje ?? 0}</strong><small>Férias, atestados e licenças</small></article>
               <article><div className="stat-icon"><Icon name="file-text" size={16} /></div><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
               <article><div className="stat-icon"><Icon name="building" size={16} /></div><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
-              <article><div className="stat-icon"><Icon name="upload" size={16} /></div><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
               <article className={(dashboard?.vencidos ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="bell" size={16} /></div><span>Vencimentos</span><strong>{(dashboard?.vencidos ?? 0) + (dashboard?.vencendo ?? 0)}</strong><small>{dashboard?.vencidos ?? 0} vencidos · {dashboard?.vencendo ?? 0} vencendo em 30 dias</small></article>
               <article><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
               <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
@@ -1649,6 +1690,37 @@ export default function Home() {
                   <td>{(a.entidade || "").replace(/_/g, " ")}</td>
                   <td>{a.detalhes ? JSON.stringify(a.detalhes) : "—"}</td>
                 </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "integracoes" && me?.papel === "admin" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Status das integrações</h3><span>Claude → Drive → Supabase</span></div>
+            </div>
+            <div className="stats">
+              <article>
+                <div className={"stat-icon " + (health?.status === "ok" ? "green" : "red")}><Icon name="activity" size={16} /></div>
+                <span>Backend</span><strong>{health?.status === "ok" ? "OK" : "Indisponível"}</strong><small>{health?.service || "API"}</small>
+              </article>
+              <article>
+                <div className={"stat-icon " + (drive?.status === "ok" ? "green" : "red")}><Icon name="upload" size={16} /></div>
+                <span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "Indisponível"}</strong><small>Claude → Drive → Supabase</small>
+              </article>
+            </div>
+            {health?.configured && (
+              <div className="table-wrap"><table><thead><tr><th>Serviço</th><th>Status</th></tr></thead><tbody>
+                {Object.entries(health.configured).map(([key, ok]: [string, any]) => (
+                  <tr key={key}><td>{SERVICO_LABEL[key] || key}</td><td><span className={"badge " + (ok ? "" : "danger")}>{ok ? "Configurado" : "Não configurado"}</span></td></tr>
+                ))}
+              </tbody></table></div>
+            )}
+            {drive?.folders && (
+              <div className="table-wrap" style={{marginTop: 16}}><table><thead><tr><th>Pasta do Drive</th><th>Status</th></tr></thead><tbody>
+                {Object.entries(drive.folders).map(([key, info]: [string, any]) => (
+                  <tr key={key}><td>{DRIVE_FOLDER_LABEL[key] || key}</td><td><span className={"badge " + (info.ok ? "" : "danger")}>{info.ok ? (info.nome || "OK") : (info.motivo || "Erro")}</span></td></tr>
+                ))}
               </tbody></table></div>
             )}
           </section>
