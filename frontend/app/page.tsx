@@ -700,6 +700,16 @@ export default function Home() {
     await refresh();
   }
 
+  async function confirmCargo(id: string, cargo: string) {
+    await api(`/api/funcionarios/${id}`, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({cargo}),
+    });
+    pushToast("Cargo confirmado.");
+    await refresh();
+  }
+
   async function submitDismiss(motivo: string) {
     if (!dismissModal) return;
     const isInactive = dismissModal.status === "inativo";
@@ -1146,7 +1156,7 @@ export default function Home() {
             </section>
             <section className="grid-two">
               <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" onPreview={openPreview} /></div>
-              <div className="panel"><div className="panel-head"><h3>Pendências</h3><span>Aguardando cargo</span></div><DataTable rows={dashboard?.pendencias || []} type="employees" /></div>
+              <div className="panel"><div className="panel-head"><h3>Pendências</h3><span>Aguardando cargo</span></div><DataTable rows={dashboard?.pendencias || []} type="employees" onConfirmCargo={confirmCargo} /></div>
             </section>
             {!!dashboard?.vencimentos?.length && (
               <section className="panel">
@@ -1182,6 +1192,7 @@ export default function Home() {
               type="employees"
               onEdit={(row) => setEmployeeModal({mode: "edit", employee: row})}
               onToggleStatus={(row) => setDismissModal(row)}
+              onConfirmCargo={confirmCargo}
             />
           </section>
         )}
@@ -1773,7 +1784,30 @@ export default function Home() {
   );
 }
 
-function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (row: any) => void}) {
+function CargoQuickSelect({row, onConfirm}: {row: any; onConfirm: (id: string, cargo: string) => Promise<void>}) {
+  const [cargo, setCargo] = useState(CARGOS[0]);
+  const [saving, setSaving] = useState(false);
+
+  async function confirmar() {
+    setSaving(true);
+    try {
+      await onConfirm(row.id, cargo);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="row-actions">
+      <select value={cargo} onChange={e => setCargo(e.target.value)} style={{padding: "6px 8px"}}>
+        {CARGOS.filter(c => c !== "Pendente").map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+      <button type="button" className="link-btn" disabled={saving} onClick={confirmar}>{saving ? "Confirmando..." : "Confirmar"}</button>
+    </div>
+  );
+}
+
+function DataTable({rows, type, onEdit, onToggleStatus, onPreview, onConfirmCargo}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (row: any) => void; onConfirmCargo?: (id: string, cargo: string) => Promise<void>}) {
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
@@ -1782,7 +1816,11 @@ function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]
   }</tr></thead><tbody>{rows.map((row, i) => <tr key={row.id || i}>{
     type === "employees" ? <>
       <td>{row.nome}</td>
-      <td><span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{row.cargo || "—"}</span></td>
+      <td>{row.cargo === "Pendente" && onConfirmCargo ? (
+        <CargoQuickSelect row={row} onConfirm={onConfirmCargo} />
+      ) : (
+        <span className={"badge " + (row.cargo === "Pendente" ? "warn" : "")}>{row.cargo || "—"}</span>
+      )}</td>
       <td>{row.condominio || "—"}</td>
       <td><span className={"badge " + (row.status === "inativo" ? "warn" : "")}>{row.status === "inativo" ? "Desligado" : "Ativo"}</span></td>
       {onEdit && <td className="row-actions">
