@@ -973,6 +973,41 @@ class AfastamentoUpdate(BaseModel):
             raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
         return self
 
+class DocumentoUpdate(BaseModel):
+    # Preenchimento manual por enquanto (a IA nao extrai competencia).
+    competencia: date | None = None
+
+    @field_validator("competencia")
+    @classmethod
+    def valida_competencia(cls, value: date | None) -> date | None:
+        if value is not None and value.day != 1:
+            return value.replace(day=1)
+        return value
+
+def find_document_by_hash(db, checksum: str) -> dict[str, Any] | None:
+    result = (
+        db.table("documentos")
+        .select("id,arquivo_nome,arquivo_drive_url,created_at,funcionario_id,condominio_id,funcionarios(nome),condominios(nome)")
+        .eq("arquivo_hash", checksum)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+def format_dd_mm(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if isinstance(value, datetime):
+        if value.tzinfo:
+            value = value.astimezone(FUSO_BRASIL)
+        return value.strftime("%d/%m")
+    if isinstance(value, date):
+        return value.strftime("%d/%m")
+    return ""
+
 def document_already_registered(
     db,
     doc_type: str,
@@ -1032,8 +1067,25 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     pdf_bytes = raw if extension == ".pdf" or upload.content_type == "application/pdf" else image_to_pdf(raw)
     checksum = hashlib.sha256(pdf_bytes).hexdigest()
 
-    ai = get_anthropic()
     db = get_supabase()
+
+    # Bloqueio por conteudo identico (bytes do PDF), antes de gastar chamada de
+    # IA/Drive: pega reenvio do mesmo arquivo mesmo com nome diferente.
+    duplicate = find_document_by_hash(db, checksum)
+    if duplicate:
+        dono = (duplicate.get("funcionarios") or {}).get("nome") or (duplicate.get("condominios") or {}).get("nome")
+        quando = format_dd_mm(duplicate.get("created_at"))
+        return {
+            "status": "duplicado",
+            "mensagem": f"Este arquivo já foi enviado{f' em {quando}' if quando else ''}{f' para {dono}' if dono else ''}.",
+            "arquivo_nome": duplicate.get("arquivo_nome"),
+            "arquivo_drive_url": duplicate.get("arquivo_drive_url"),
+            "funcionario_id": duplicate.get("funcionario_id"),
+            "condominio_id": duplicate.get("condominio_id"),
+            "checksum": checksum,
+        }
+
+    ai = get_anthropic()
     drive = get_drive()
 
     info = identify_document(ai, pdf_bytes)
@@ -1058,6 +1110,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
                 "status": "duplicado",
                 "mensagem": "Documento ja cadastrado; nenhuma nova gravacao foi feita.",
                 "condominio": condominio["nome"],
+                "condominio_id": condominio["id"],
                 "documento": doc_type,
                 "ano": year,
                 "arquivo_nome": existing.get("arquivo_nome"),
@@ -1076,6 +1129,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "ano": year,
             "arquivo_nome": target_name,
             "arquivo_drive_url": drive_url,
+            "arquivo_hash": checksum,
             "origem": "automacao",
         }
         if anterior:
@@ -1093,6 +1147,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         return {
             "status": "sucesso",
             "condominio": condominio["nome"],
+            "condominio_id": condominio["id"],
             "documento": doc_type,
             "ano": year,
             "arquivo_nome": target_name,
@@ -1117,6 +1172,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "status": "duplicado",
             "mensagem": "Documento ja cadastrado; nenhuma nova gravacao foi feita.",
             "funcionario": employee["nome"],
+            "funcionario_id": employee["id"],
             "documento": doc_type,
             "condominio": employee.get("condominio"),
             "cargo": employee.get("cargo"),
@@ -1137,6 +1193,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "ano": year,
         "arquivo_nome": target_name,
         "arquivo_drive_url": drive_url,
+        "arquivo_hash": checksum,
         "origem": "automacao",
     }
     if anterior:
@@ -1154,6 +1211,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     return {
         "status": "sucesso",
         "funcionario": employee["nome"],
+        "funcionario_id": employee["id"],
         "documento": doc_type,
         "condominio": employee.get("condominio"),
         "cargo": employee.get("cargo"),
@@ -1308,6 +1366,75 @@ def update_employee(funcionario_id: str, payload: FuncionarioUpdate):
             raise HTTPException(status_code=409, detail="Ja existe um funcionario cadastrado com este CPF.")
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar funcionario: {exc}")
 
+@app.get("/api/funcionarios/{funcionario_id}/ficha")
+def funcionario_ficha(funcionario_id: str):
+    # Junta tudo que a ficha do funcionario mostra numa chamada so, em vez do
+    # frontend disparar 6-7 requests separadas pra montar a mesma tela.
+    db = get_supabase()
+    try:
+        emp_result = db.table("funcionarios").select("*").eq("id", funcionario_id).limit(1).execute()
+        if not emp_result.data:
+            raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
+        funcionario = emp_result.data[0]
+
+        docs = with_live_status(
+            db.table("documentos").select("*").eq("funcionario_id", funcionario_id).order("created_at", desc=True).execute().data or []
+        )
+
+        obrigatorios = DOCUMENTOS_OBRIGATORIOS_POR_CARGO.get(funcionario.get("cargo") or "", [])
+        checklist = []
+        for tipo in obrigatorios:
+            doc = next((d for d in docs if d["tipo_documento"] == tipo), None)
+            if not doc:
+                situacao = "falta"
+            elif doc["status_validade"] == "vencido":
+                situacao = "falta"
+            elif doc["status_validade"] == "vencendo":
+                situacao = "vence"
+            else:
+                situacao = "tem"
+            checklist.append({"tipo_documento": tipo, "situacao": situacao, "documento": doc})
+
+        epis = db.table("epis_entregues").select("*").eq("funcionario_id", funcionario_id).order("data_entrega", desc=True).execute().data or []
+        for epi in epis:
+            epi["status_validade"] = compute_status_validade(epi.get("data_validade"))
+
+        afastamentos = with_live_status_afastamento(
+            db.table("afastamentos").select("*").eq("funcionario_id", funcionario_id).order("data_inicio", desc=True).execute().data or []
+        )
+
+        inicio_mes = hoje_brasil().replace(day=1)
+        escalas_mes = (
+            db.table("escalas")
+            .select("*,postos_trabalho(nome,condominios(nome))")
+            .eq("funcionario_id", funcionario_id)
+            .gte("data", inicio_mes.isoformat())
+            .order("data")
+            .execute()
+            .data or []
+        )
+
+        auditoria = db.table("auditoria").select("*").eq("entidade_id", funcionario_id).order("created_at", desc=True).limit(50).execute().data or []
+
+        financeiro = with_live_status_financeiro(
+            db.table("financeiro_lancamentos").select("*").eq("funcionario_id", funcionario_id).order("vencimento", desc=True).execute().data or []
+        )
+
+        return {
+            "funcionario": funcionario,
+            "documentos": docs,
+            "checklist": checklist,
+            "epis": epis,
+            "afastamentos": afastamentos,
+            "escalas_mes": escalas_mes,
+            "auditoria": auditoria,
+            "financeiro": financeiro,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar ficha do funcionario: {exc}")
+
 @app.post("/api/funcionarios/{funcionario_id}/desligar")
 def deactivate_employee(funcionario_id: str, payload: FuncionarioDesligar):
     db = get_supabase()
@@ -1360,6 +1487,24 @@ def documents(limit: int = 100):
         return {"items": with_live_status(result.data or [])}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar documentos: {exc}")
+
+@app.put("/api/documentos/{documento_id}")
+def update_documento(documento_id: str, payload: DocumentoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("documentos").select("id").eq("id", documento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Documento nao encontrado.")
+        result = db.table("documentos").update(data).eq("id", documento_id).execute()
+        log_auditoria(db, "atualizar", "documento", documento_id, {"campos": list(data.keys())})
+        return with_live_status(result.data)[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar documento: {exc}")
 
 @app.get("/api/condominios")
 def condominiums():
@@ -2280,7 +2425,7 @@ def dashboard():
     try:
         db = get_supabase()
         employees_rows = db.table("funcionarios").select("id,nome,cargo,condominio").execute().data or []
-        docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio),condominios(nome)").order("id", desc=True).limit(8).execute().data or []
+        docs_rows = db.table("documentos").select("*,funcionarios(nome,cargo,condominio),condominios(nome)").order("id", desc=True).limit(10).execute().data or []
         with_live_status(docs_rows)
         all_docs = with_live_status(
             db.table("documentos").select("id,tipo_documento,ano,data_validade,arquivo_drive_url,funcionarios(nome,cargo,condominio),condominios(nome)").execute().data or []
