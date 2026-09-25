@@ -21,11 +21,23 @@ type Dashboard = {
 };
 
 const STATUS_VALIDADE_LABEL: Record<string, string> = {
-  valido: "Válido",
+  valido: "Em dia",
   vencendo: "Vencendo",
   vencido: "Vencido",
-  nao_aplicavel: "—",
+  nao_aplicavel: "Sem validade",
 };
+const STATUS_VALIDADE_CLASS: Record<string, string> = {
+  valido: "",
+  vencendo: "warn",
+  vencido: "danger",
+  nao_aplicavel: "neutral",
+};
+function statusValidadeLabel(status: string | null | undefined): string {
+  return STATUS_VALIDADE_LABEL[status || "nao_aplicavel"] || STATUS_VALIDADE_LABEL.nao_aplicavel;
+}
+function statusValidadeClass(status: string | null | undefined): string {
+  return "badge " + (STATUS_VALIDADE_CLASS[status || "nao_aplicavel"] ?? "neutral");
+}
 
 const TIPOS_AFASTAMENTO = ["Ferias", "AtestadoMedico", "LicencaMaternidade", "LicencaPaternidade", "Suspensao", "Outro"];
 const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
@@ -85,6 +97,15 @@ const LANCAMENTO_STATUS_LABEL: Record<string, string> = {
 function formatMoney(value: any) {
   const n = Number(value);
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
+}
+
+// Datas guardadas/trafegadas em ISO (aaaa-mm-dd); exibicao sempre em dd/mm/aaaa.
+function formatDate(value: any): string {
+  if (!value) return "—";
+  const iso = String(value).slice(0, 10);
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return "—";
+  return `${d}/${m}/${y}`;
 }
 
 const MES_CURTO = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
@@ -516,7 +537,7 @@ export default function Home() {
       contagem[status] = (contagem[status] || 0) + 1;
     }
     return Object.entries(contagem)
-      .map(([status, total]) => ({status, nome: STATUS_VALIDADE_LABEL[status] || status, total}))
+      .map(([status, total]) => ({status, nome: statusValidadeLabel(status), total}))
       .filter(row => row.total > 0);
   }, [documentos]);
 
@@ -1157,7 +1178,7 @@ export default function Home() {
                   <td>{o.funcionario}</td>
                   <td><span className="badge">{o.cargo}</span></td>
                   <td>{o.condominio || "—"}</td>
-                  <td>{o.documentos_faltantes.map((d: string) => <span key={d} className="badge warn" style={{marginRight: 6}}>{d}</span>)}</td>
+                  <td>{o.documentos_faltantes.map((d: string) => <span key={d} className="badge missing" style={{marginRight: 6}}>{d} · Faltando</span>)}</td>
                 </tr>)}
               </tbody></table></div>
             )}
@@ -1190,7 +1211,7 @@ export default function Home() {
                   <td>{c.condominios?.nome || "—"}</td>
                   <td>{c.objeto || "—"}</td>
                   <td>{c.valor_mensal ? `R$ ${Number(c.valor_mensal).toLocaleString("pt-BR", {minimumFractionDigits: 2})}` : "—"}</td>
-                  <td>{[c.data_inicio, c.data_fim].filter(Boolean).join(" → ") || "—"}</td>
+                  <td>{[formatDate(c.data_inicio), formatDate(c.data_fim)].filter(s => s !== "—").join(" → ") || "—"}</td>
                   <td><span className={"badge " + (c.status === "encerrado" ? "warn" : "")}>{c.status === "encerrado" ? "Encerrado" : "Ativo"}</span></td>
                   <td className="row-actions"><button className="link-btn" onClick={() => setContratoModal({mode: "edit", contrato: c})}>Editar</button></td>
                 </tr>)}
@@ -1375,7 +1396,7 @@ export default function Home() {
                     <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
                     <td>{l.categoria || l.descricao || "—"}</td>
                     <td style={{color: l.tipo === "despesa" ? "var(--red)" : "var(--green)", fontWeight: 700}}>{formatMoney(l.valor)}</td>
-                    <td>{l.vencimento || "—"}</td>
+                    <td>{formatDate(l.vencimento)}</td>
                     <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
                     <td className="row-actions">
                       <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
@@ -1398,9 +1419,9 @@ export default function Home() {
                 {epis.map((e: any) => <tr key={e.id}>
                   <td>{e.funcionarios?.nome || "—"}</td>
                   <td>{e.item}</td>
-                  <td>{e.data_entrega || "—"}</td>
-                  <td>{e.data_validade || "—"}</td>
-                  <td><span className={"badge " + (e.status_validade === "vencido" ? "danger" : e.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[e.status_validade] || "—"}</span></td>
+                  <td>{formatDate(e.data_entrega)}</td>
+                  <td>{formatDate(e.data_validade)}</td>
+                  <td><span className={statusValidadeClass(e.status_validade)}>{statusValidadeLabel(e.status_validade)}</span></td>
                   <td className="row-actions"><button className="link-btn" onClick={() => setEpiModal({mode: "edit", epi: e})}>Editar</button></td>
                 </tr>)}
               </tbody></table></div>
@@ -1418,8 +1439,8 @@ export default function Home() {
                 {afastamentos.map((a: any) => <tr key={a.id}>
                   <td>{a.funcionarios?.nome || "—"}</td>
                   <td>{TIPO_AFASTAMENTO_LABEL[a.tipo] || a.tipo}</td>
-                  <td>{a.data_inicio}</td>
-                  <td>{a.data_fim}</td>
+                  <td>{formatDate(a.data_inicio)}</td>
+                  <td>{formatDate(a.data_fim)}</td>
                   <td><span className={"badge " + (a.status === "em_andamento" ? "warn" : "")}>{STATUS_AFASTAMENTO_LABEL[a.status] || a.status}</span></td>
                   <td className="row-actions"><button className="link-btn" onClick={() => setAfastamentoModal({mode: "edit", afastamento: a})}>Editar</button></td>
                 </tr>)}
@@ -1760,7 +1781,7 @@ function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row.arquivo_drive_url)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={statusValidadeClass(row.status_validade)}>{statusValidadeLabel(row.status_validade)}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row.arquivo_drive_url)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
@@ -2412,7 +2433,7 @@ function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamen
               {meusContratos.map((c: any) => (
                 <article key={c.id} className="result">
                   <div><b>{c.objeto || "Contrato"}</b><span>{c.status === "encerrado" ? "Encerrado" : "Ativo"}</span></div>
-                  <p>{formatMoney(c.valor_mensal)}/mês · vigência {[c.data_inicio, c.data_fim].filter(Boolean).join(" a ") || "—"}</p>
+                  <p>{formatMoney(c.valor_mensal)}/mês · vigência {[formatDate(c.data_inicio), formatDate(c.data_fim)].filter(s => s !== "—").join(" a ") || "—"}</p>
                 </article>
               ))}
             </div>
@@ -2440,7 +2461,7 @@ function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamen
               <tr key={l.id}>
                 <td>{l.categoria || l.descricao || "—"}</td>
                 <td>{formatMoney(l.valor)}</td>
-                <td>{l.vencimento || "—"}</td>
+                <td>{formatDate(l.vencimento)}</td>
                 <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
               </tr>
             ))}

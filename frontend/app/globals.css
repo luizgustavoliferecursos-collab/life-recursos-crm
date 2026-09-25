@@ -91,6 +91,8 @@ tbody tr:hover{background:#fafaff}
 .badge{display:inline-flex;align-items:center;gap:4px;background:var(--green-soft);color:#166534;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700}
 .badge.warn{background:var(--amber-soft);color:#92600a}
 .badge.danger{background:var(--red-soft);color:#b42318}
+.badge.neutral{background:#eef0f5;color:#5b6472}
+.badge.missing{background:#ffe4e2;color:#c8341f}
 .empty{padding:32px;color:var(--muted-2);text-align:center;font-size:13px}
 
 /* ---------- buttons / forms (base, unstyled elements included) ---------- */
