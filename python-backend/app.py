@@ -984,6 +984,30 @@ class DocumentoUpdate(BaseModel):
             return value.replace(day=1)
         return value
 
+def find_document_by_hash(db, checksum: str) -> dict[str, Any] | None:
+    result = (
+        db.table("documentos")
+        .select("id,arquivo_nome,arquivo_drive_url,created_at,funcionarios(nome),condominios(nome)")
+        .eq("arquivo_hash", checksum)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+def format_dd_mm(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if isinstance(value, datetime):
+        if value.tzinfo:
+            value = value.astimezone(FUSO_BRASIL)
+        return value.strftime("%d/%m")
+    if isinstance(value, date):
+        return value.strftime("%d/%m")
+    return ""
+
 def document_already_registered(
     db,
     doc_type: str,
@@ -1043,8 +1067,23 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     pdf_bytes = raw if extension == ".pdf" or upload.content_type == "application/pdf" else image_to_pdf(raw)
     checksum = hashlib.sha256(pdf_bytes).hexdigest()
 
-    ai = get_anthropic()
     db = get_supabase()
+
+    # Bloqueio por conteudo identico (bytes do PDF), antes de gastar chamada de
+    # IA/Drive: pega reenvio do mesmo arquivo mesmo com nome diferente.
+    duplicate = find_document_by_hash(db, checksum)
+    if duplicate:
+        dono = (duplicate.get("funcionarios") or {}).get("nome") or (duplicate.get("condominios") or {}).get("nome")
+        quando = format_dd_mm(duplicate.get("created_at"))
+        return {
+            "status": "duplicado",
+            "mensagem": f"Este arquivo já foi enviado{f' em {quando}' if quando else ''}{f' para {dono}' if dono else ''}.",
+            "arquivo_nome": duplicate.get("arquivo_nome"),
+            "arquivo_drive_url": duplicate.get("arquivo_drive_url"),
+            "checksum": checksum,
+        }
+
+    ai = get_anthropic()
     drive = get_drive()
 
     info = identify_document(ai, pdf_bytes)
@@ -1087,6 +1126,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "ano": year,
             "arquivo_nome": target_name,
             "arquivo_drive_url": drive_url,
+            "arquivo_hash": checksum,
             "origem": "automacao",
         }
         if anterior:
@@ -1148,6 +1188,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "ano": year,
         "arquivo_nome": target_name,
         "arquivo_drive_url": drive_url,
+        "arquivo_hash": checksum,
         "origem": "automacao",
     }
     if anterior:
