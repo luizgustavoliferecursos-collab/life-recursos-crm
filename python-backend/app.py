@@ -6,21 +6,25 @@ import json
 import os
 import re
 import secrets
+import time
 import unicodedata
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 import anthropic
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from supabase import create_client
 
 APP_NAME = "LIFE Recursos API"
@@ -37,8 +41,30 @@ DOCUMENT_VALIDITY_DAYS = {
     "CertificadoEPI": 365,         # ficha/termo de entrega de EPI, revisado anualmente
     "CertificadoQualificacao": 730,  # curso de vigilante e similares, reciclagem a cada 2 anos
 }
+# Checklist de onboarding: documentos obrigatorios por cargo. Default razoavel
+# pro setor de servicos de condominio - ajuste aqui se a exigencia real da
+# empresa for diferente (varia por CCT/categoria).
+DOCUMENTOS_OBRIGATORIOS_POR_CARGO: dict[str, list[str]] = {
+    "ASG": ["Contrato", "ASO", "CertificadoEPI"],
+    "Diarista": ["Contrato", "ASO", "CertificadoEPI"],
+    "Guardiao": ["Contrato", "ASO", "CertificadoEPI", "CertificadoQualificacao"],
+    "Portaria": ["Contrato", "ASO", "CertificadoEPI"],
+    "Seguranca": ["Contrato", "ASO", "CertificadoEPI", "CertificadoQualificacao"],
+    "Staff": ["Contrato", "ASO"],
+}
 VENCENDO_EM_DIAS = 30  # janela de alerta "vencendo" antes do vencimento
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+# Horas por turno de trabalho, pra estimar horas trabalhadas/extras a partir
+# da escala real (aproximacao pra apoiar a folha, nao um calculo legal exato).
+HORAS_POR_TURNO = {"12x36": 12, "6x1": 8, "comercial": 8}
+LIMITE_MENSAL_HORAS = 220  # referencia CLT padrao (44h/semana)
+
+def horas_do_turno(turno: str | None) -> float:
+    turno_lower = (turno or "").lower()
+    for chave, horas in HORAS_POR_TURNO.items():
+        if chave in turno_lower:
+            return horas
+    return 8  # turno sem padrao reconhecido: assume jornada padrao de 8h
 # Tipos de documento que pertencem ao condominio, nao a um funcionario especifico
 # (ex.: folha de ponto e do posto/condominio como um todo, nao de uma pessoa).
 CONDOMINIO_LEVEL_DOC_TYPES = {"FolhaDePonto"}
@@ -100,6 +126,66 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Antes desta mudanca, qualquer um que soubesse a URL do Render acessava a API
+# direto, sem login nenhum (o front so tinha uma tela de login "por cima").
+# Agora todo acesso passa pelo proxy same-origin do Next.js (frontend/app/api/proxy),
+# que so deixa passar quem tem sessao valida (life_auth) e injeta este segredo
+# compartilhado - se ele nao bater, a API recusa. So fica "aberta" (comportamento
+# antigo) enquanto BACKEND_SHARED_SECRET nao estiver configurado nas duas pontas,
+# pra nao quebrar ambientes que ainda nao migraram.
+BACKEND_SHARED_SECRET = env("BACKEND_SHARED_SECRET")
+PUBLIC_PATHS = {"/health"}
+# Upload de documentos e a unica excecao que chama o Render DIRETO do navegador
+# (nao pelo proxy): a Vercel limita o corpo de uma function em 4.5MB, pequeno
+# demais pra PDF escaneado de ate 30MB. Em vez do segredo interno (que nunca
+# pode chegar ao navegador), essa rota aceita um token de curta duracao
+# assinado pelo Next.js so depois de confirmar sessao valida.
+UPLOAD_TOKEN_PATHS = {"/api/documentos/processar"}
+
+_current_actor: ContextVar[dict[str, str | None]] = ContextVar("_current_actor", default={})
+
+def current_actor() -> dict[str, str | None]:
+    return _current_actor.get()
+
+def verify_upload_token(token: str | None, secret: str) -> str | None:
+    if not token:
+        return None
+    try:
+        user_id, exp_str, signature_hex = token.split(".")
+        expected = hmac.new(secret.encode("utf-8"), f"{user_id}.{exp_str}".encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature_hex):
+            return None
+        if int(exp_str) < int(time.time()):
+            return None
+        return user_id
+    except (ValueError, AttributeError):
+        return None
+
+@app.middleware("http")
+async def enforce_internal_secret(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    user_id_from_token = None
+    if BACKEND_SHARED_SECRET:
+        authorized = request.headers.get("x-internal-secret") == BACKEND_SHARED_SECRET
+        if not authorized and request.url.path in UPLOAD_TOKEN_PATHS:
+            user_id_from_token = verify_upload_token(request.headers.get("x-upload-token"), BACKEND_SHARED_SECRET)
+            authorized = user_id_from_token is not None
+        if not authorized:
+            return JSONResponse(status_code=401, content={"detail": "Nao autorizado."})
+
+    nome_header = request.headers.get("x-user-nome")
+    token = _current_actor.set({
+        "id": request.headers.get("x-user-id") or user_id_from_token,
+        "nome": unquote(nome_header) if nome_header else None,
+        "papel": request.headers.get("x-user-papel"),
+    })
+    try:
+        return await call_next(request)
+    finally:
+        _current_actor.reset(token)
 
 def decode_json_secret(direct_name: str, b64_name: str) -> dict[str, Any] | None:
     raw = env(direct_name)
@@ -189,6 +275,25 @@ def compute_status_validade(data_validade: Any) -> str:
     if data_validade <= today + timedelta(days=VENCENDO_EM_DIAS):
         return "vencendo"
     return "valido"
+
+def compute_status_afastamento(data_inicio: Any, data_fim: Any) -> str:
+    # Status sempre recalculado na leitura (mesmo padrao de status_validade/
+    # status_calculado) - nunca fica desatualizado so pelo passar do tempo.
+    if isinstance(data_inicio, str):
+        data_inicio = date.fromisoformat(data_inicio[:10])
+    if isinstance(data_fim, str):
+        data_fim = date.fromisoformat(data_fim[:10])
+    today = hoje_brasil()
+    if today < data_inicio:
+        return "agendado"
+    if today > data_fim:
+        return "concluido"
+    return "em_andamento"
+
+def with_live_status_afastamento(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for row in rows:
+        row["status"] = compute_status_afastamento(row["data_inicio"], row["data_fim"])
+    return rows
 
 def compute_status_lancamento(row: dict[str, Any]) -> str:
     # Igual ao status_validade de documentos: "atrasado" e sempre recalculado na
@@ -554,7 +659,25 @@ class CondominioUpdate(BaseModel):
             raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_CONDOMINIO)}")
         return value
 
-VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"]
+VALID_STATUS_OCORRENCIA = ["aberta", "em_andamento", "resolvida"]
+
+class OcorrenciaCreate(BaseModel):
+    condominio_id: str
+    titulo: str = Field(min_length=1)
+    descricao: str | None = None
+
+class OcorrenciaUpdate(BaseModel):
+    status: str | None = None
+    resposta: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def valida_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_STATUS_OCORRENCIA:
+            raise ValueError(f"Status invalido. Use um de: {', '.join(VALID_STATUS_OCORRENCIA)}")
+        return value
+
+VALID_PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"]
 PBKDF2_ITERATIONS = 100_000
 
 def hash_password(password: str) -> str:
@@ -577,6 +700,22 @@ def verify_password(password: str, stored: str) -> bool:
 def public_user(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key != "senha_hash"}
 
+def log_auditoria(db, acao: str, entidade: str, entidade_id: Any = None, detalhes: dict[str, Any] | None = None) -> None:
+    # Auditoria roda em melhor esforco: uma falha aqui (ex.: tabela ainda nao
+    # migrada) nunca pode derrubar a operacao principal que esta sendo registrada.
+    actor = current_actor()
+    try:
+        db.table("auditoria").insert({
+            "usuario_id": actor.get("id"),
+            "usuario_nome": actor.get("nome") or "desconhecido",
+            "acao": acao,
+            "entidade": entidade,
+            "entidade_id": str(entidade_id) if entidade_id is not None else None,
+            "detalhes": detalhes,
+        }).execute()
+    except Exception:
+        pass
+
 class LoginRequest(BaseModel):
     login: str = Field(min_length=1)
     senha: str = Field(min_length=1)
@@ -587,6 +726,7 @@ class UsuarioCreate(BaseModel):
     senha: str = Field(min_length=6)
     papel: str
     condominio_id: str | None = None
+    funcionario_id: str | None = None
     ativo: bool = True
 
     @field_validator("papel")
@@ -600,6 +740,7 @@ class UsuarioUpdate(BaseModel):
     nome: str | None = None
     papel: str | None = None
     condominio_id: str | None = None
+    funcionario_id: str | None = None
     ativo: bool | None = None
     senha: str | None = Field(default=None, min_length=6)
 
@@ -791,6 +932,47 @@ class EpiUpdate(BaseModel):
     termo_assinado_url: str | None = None
     observacao: str | None = None
 
+VALID_TIPOS_AFASTAMENTO = ["Ferias", "AtestadoMedico", "LicencaMaternidade", "LicencaPaternidade", "Suspensao", "Outro"]
+
+class AfastamentoCreate(BaseModel):
+    funcionario_id: str
+    tipo: str
+    data_inicio: date
+    data_fim: date
+    observacao: str | None = None
+
+    @field_validator("tipo")
+    @classmethod
+    def valida_tipo(cls, value: str) -> str:
+        if value not in VALID_TIPOS_AFASTAMENTO:
+            raise ValueError(f"Tipo invalido. Use um de: {', '.join(VALID_TIPOS_AFASTAMENTO)}")
+        return value
+
+    @model_validator(mode="after")
+    def valida_periodo(self):
+        if self.data_fim < self.data_inicio:
+            raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
+        return self
+
+class AfastamentoUpdate(BaseModel):
+    tipo: str | None = None
+    data_inicio: date | None = None
+    data_fim: date | None = None
+    observacao: str | None = None
+
+    @field_validator("tipo")
+    @classmethod
+    def valida_tipo(cls, value: str | None) -> str | None:
+        if value is not None and value not in VALID_TIPOS_AFASTAMENTO:
+            raise ValueError(f"Tipo invalido. Use um de: {', '.join(VALID_TIPOS_AFASTAMENTO)}")
+        return value
+
+    @model_validator(mode="after")
+    def valida_periodo(self):
+        if self.data_inicio and self.data_fim and self.data_fim < self.data_inicio:
+            raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
+        return self
+
 def document_already_registered(
     db,
     doc_type: str,
@@ -814,6 +996,18 @@ def document_already_registered(
         if row.get("arquivo_nome") == file_name:
             return row
     return None
+
+def find_previous_document(db, doc_type: str, *, funcionario_id: Any = None, condominio_id: Any = None) -> dict[str, Any] | None:
+    # Documento mais recente do mesmo tipo pro mesmo dono (funcionario ou
+    # condominio), pra linkar a nova versao ao invez de deixar um registro
+    # solto (ex.: ASO renovado aponta pro ASO anterior).
+    query = db.table("documentos").select("id").eq("tipo_documento", doc_type)
+    if funcionario_id:
+        query = query.eq("funcionario_id", funcionario_id)
+    if condominio_id:
+        query = query.eq("condominio_id", condominio_id)
+    result = query.order("created_at", desc=True).limit(1).execute()
+    return result.data[0] if result.data else None
 
 def upload_pdf_to_drive(drive, data: bytes, file_name: str, folder_id: str) -> dict[str, Any]:
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype="application/pdf", resumable=True)
@@ -875,6 +1069,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
         drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
 
+        anterior = find_previous_document(db, doc_type, condominio_id=condominio["id"])
         doc_record: dict[str, Any] = {
             "condominio_id": condominio["id"],
             "tipo_documento": doc_type,
@@ -883,6 +1078,8 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "arquivo_drive_url": drive_url,
             "origem": "automacao",
         }
+        if anterior:
+            doc_record["versao_anterior_id"] = anterior["id"]
         if data_validade:
             doc_record["data_validade"] = data_validade.isoformat()
         try:
@@ -903,6 +1100,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
             "checksum": checksum,
             "data_validade": data_validade.isoformat() if data_validade else None,
             "status_validade": compute_status_validade(data_validade),
+            "versao_anterior": bool(anterior),
         }
 
     employee_name = info.get("nome_funcionario")
@@ -932,6 +1130,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
     uploaded = upload_pdf_to_drive(drive, pdf_bytes, target_name, folder_id)
     drive_url = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{uploaded['id']}/view"
 
+    anterior = find_previous_document(db, doc_type, funcionario_id=employee["id"])
     doc_record: dict[str, Any] = {
         "funcionario_id": employee["id"],
         "tipo_documento": doc_type,
@@ -940,6 +1139,8 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "arquivo_drive_url": drive_url,
         "origem": "automacao",
     }
+    if anterior:
+        doc_record["versao_anterior_id"] = anterior["id"]
     if data_validade:
         doc_record["data_validade"] = data_validade.isoformat()
     try:
@@ -962,6 +1163,7 @@ def process_one(upload: UploadFile) -> dict[str, Any]:
         "checksum": checksum,
         "data_validade": data_validade.isoformat() if data_validade else None,
         "status_validade": compute_status_validade(data_validade),
+        "versao_anterior": bool(anterior),
     }
 
 @app.get("/health")
@@ -1019,6 +1221,57 @@ def employees():
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar funcionarios: {exc}")
 
+@app.get("/api/onboarding")
+def onboarding_checklist():
+    # So lista quem tem pendencia (documento obrigatorio do cargo ainda nao
+    # registrado) - funcionario com checklist completo nao aparece, pra manter
+    # a lista acionavel.
+    try:
+        db = get_supabase()
+        funcionarios_rows = (
+            db.table("funcionarios")
+            .select("id,nome,cargo,condominio")
+            .eq("status", "ativo")
+            .neq("cargo", "Pendente")
+            .execute()
+            .data
+            or []
+        )
+        if not funcionarios_rows:
+            return {"items": []}
+
+        tipos_por_funcionario: dict[str, set[str]] = {}
+        docs_rows = (
+            db.table("documentos")
+            .select("funcionario_id,tipo_documento")
+            .in_("funcionario_id", [row["id"] for row in funcionarios_rows])
+            .execute()
+            .data
+            or []
+        )
+        for row in docs_rows:
+            fid = row.get("funcionario_id")
+            if fid:
+                tipos_por_funcionario.setdefault(fid, set()).add(row.get("tipo_documento"))
+
+        pendencias = []
+        for funcionario in funcionarios_rows:
+            obrigatorios = DOCUMENTOS_OBRIGATORIOS_POR_CARGO.get(funcionario.get("cargo"), [])
+            registrados = tipos_por_funcionario.get(funcionario["id"], set())
+            faltantes = [tipo for tipo in obrigatorios if tipo not in registrados]
+            if faltantes:
+                pendencias.append({
+                    "funcionario_id": funcionario["id"],
+                    "funcionario": funcionario["nome"],
+                    "cargo": funcionario.get("cargo"),
+                    "condominio": funcionario.get("condominio"),
+                    "documentos_faltantes": faltantes,
+                })
+        pendencias.sort(key=lambda row: (row["cargo"] or "", row["funcionario"]))
+        return {"items": pendencias}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar checklist de onboarding: {exc}")
+
 @app.post("/api/funcionarios", status_code=201)
 def create_employee(payload: FuncionarioCreate):
     db = get_supabase()
@@ -1026,6 +1279,7 @@ def create_employee(payload: FuncionarioCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("funcionarios").insert(data).execute()
+        log_auditoria(db, "criar", "funcionario", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         message = str(exc)
@@ -1044,6 +1298,7 @@ def update_employee(funcionario_id: str, payload: FuncionarioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "atualizar", "funcionario", funcionario_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1066,6 +1321,7 @@ def deactivate_employee(funcionario_id: str, payload: FuncionarioDesligar):
             "motivo_desligamento": payload.motivo,
         }
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "desligar", "funcionario", funcionario_id, {"motivo": payload.motivo})
         return result.data[0]
     except HTTPException:
         raise
@@ -1081,6 +1337,7 @@ def reactivate_employee(funcionario_id: str):
             raise HTTPException(status_code=404, detail="Funcionario nao encontrado.")
         data = {"status": "ativo", "data_desligamento": None, "motivo_desligamento": None}
         result = db.table("funcionarios").update(data).eq("id", funcionario_id).execute()
+        log_auditoria(db, "reativar", "funcionario", funcionario_id)
         return result.data[0]
     except HTTPException:
         raise
@@ -1119,6 +1376,7 @@ def create_condominium(payload: CondominioCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("condominios").insert(data).execute()
+        log_auditoria(db, "criar", "condominio", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         message = str(exc)
@@ -1137,6 +1395,7 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
         result = db.table("condominios").update(data).eq("id", condominio_id).execute()
+        log_auditoria(db, "atualizar", "condominio", condominio_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1145,6 +1404,49 @@ def update_condominium(condominio_id: str, payload: CondominioUpdate):
         if "condominios_nome_key" in message or "duplicate key" in message.lower():
             raise HTTPException(status_code=409, detail="Ja existe um condominio com este nome.")
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar condominio: {exc}")
+
+@app.get("/api/ocorrencias")
+def list_ocorrencias(condominio_id: str | None = None):
+    try:
+        query = get_supabase().table("ocorrencias").select("*,condominios(nome)").order("created_at", desc=True)
+        if condominio_id:
+            query = query.eq("condominio_id", condominio_id)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar ocorrencias: {exc}")
+
+@app.post("/api/ocorrencias", status_code=201)
+def create_ocorrencia(payload: OcorrenciaCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    try:
+        existing = db.table("condominios").select("id").eq("id", payload.condominio_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Condominio nao encontrado.")
+        result = db.table("ocorrencias").insert(data).execute()
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao registrar ocorrencia: {exc}")
+
+@app.put("/api/ocorrencias/{ocorrencia_id}")
+def update_ocorrencia(ocorrencia_id: str, payload: OcorrenciaUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("ocorrencias").select("id").eq("id", ocorrencia_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Ocorrencia nao encontrada.")
+        result = db.table("ocorrencias").update(data).eq("id", ocorrencia_id).execute()
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar ocorrencia: {exc}")
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
@@ -1162,6 +1464,13 @@ def login(payload: LoginRequest):
         raise HTTPException(status_code=403, detail="Usuario desativado.")
     if not verify_password(senha, user.get("senha_hash", "")):
         raise HTTPException(status_code=401, detail="Usuario ou senha invalidos.")
+    try:
+        db.table("auditoria").insert({
+            "usuario_id": user["id"], "usuario_nome": user["nome"],
+            "acao": "login", "entidade": "usuario", "entidade_id": user["id"],
+        }).execute()
+    except Exception:
+        pass
     return public_user(user)
 
 @app.get("/api/usuarios")
@@ -1172,6 +1481,18 @@ def list_users():
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar usuarios: {exc}")
 
+@app.get("/api/auditoria")
+def list_auditoria(limit: int = 100, entidade: str | None = None):
+    try:
+        limit = max(1, min(limit, 500))
+        query = get_supabase().table("auditoria").select("*").order("created_at", desc=True).limit(limit)
+        if entidade:
+            query = query.eq("entidade", entidade)
+        result = query.execute()
+        return {"items": result.data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar auditoria: {exc}")
+
 @app.post("/api/usuarios", status_code=201)
 def create_user(payload: UsuarioCreate):
     db = get_supabase()
@@ -1179,6 +1500,7 @@ def create_user(payload: UsuarioCreate):
     data["senha_hash"] = hash_password(payload.senha)
     try:
         result = db.table("usuarios").insert(data).execute()
+        log_auditoria(db, "criar", "usuario", result.data[0]["id"], {"papel": data.get("papel")})
         return public_user(result.data[0])
     except Exception as exc:
         message = str(exc)
@@ -1199,6 +1521,7 @@ def update_user(usuario_id: str, payload: UsuarioUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
         result = db.table("usuarios").update(data).eq("id", usuario_id).execute()
+        log_auditoria(db, "atualizar", "usuario", usuario_id, {"campos": [k for k in data.keys() if k != "senha_hash"]})
         return public_user(result.data[0])
     except HTTPException:
         raise
@@ -1223,6 +1546,7 @@ def create_contrato(payload: ContratoCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("contratos_condominio").insert(data).execute()
+        log_auditoria(db, "criar", "contrato", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar contrato: {exc}")
@@ -1238,6 +1562,7 @@ def update_contrato(contrato_id: str, payload: ContratoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Contrato nao encontrado.")
         result = db.table("contratos_condominio").update(data).eq("id", contrato_id).execute()
+        log_auditoria(db, "atualizar", "contrato", contrato_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1262,6 +1587,7 @@ def create_posto(payload: PostoCreate):
     data.setdefault("status", "ativo")
     try:
         result = db.table("postos_trabalho").insert(data).execute()
+        log_auditoria(db, "criar", "posto_trabalho", result.data[0]["id"])
         return result.data[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar posto de trabalho: {exc}")
@@ -1277,6 +1603,7 @@ def update_posto(posto_id: str, payload: PostoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Posto de trabalho nao encontrado.")
         result = db.table("postos_trabalho").update(data).eq("id", posto_id).execute()
+        log_auditoria(db, "atualizar", "posto_trabalho", posto_id, {"campos": list(data.keys())})
         return result.data[0]
     except HTTPException:
         raise
@@ -1345,8 +1672,21 @@ def set_escala(payload: EscalaAtribuir):
             if conflito.data:
                 outro = (conflito.data[0].get("postos_trabalho") or {}).get("nome") or "outro posto"
                 aviso = f"Este funcionario ja esta escalado em \"{outro}\" neste mesmo dia."
+            else:
+                afastamento = (
+                    db.table("afastamentos")
+                    .select("tipo")
+                    .eq("funcionario_id", payload.funcionario_id)
+                    .lte("data_inicio", payload.data.isoformat())
+                    .gte("data_fim", payload.data.isoformat())
+                    .limit(1)
+                    .execute()
+                )
+                if afastamento.data:
+                    aviso = f"Este funcionario esta de {afastamento.data[0]['tipo']} neste dia."
         result = db.table("escalas").upsert(data, on_conflict="posto_id,data").execute()
         response = dict(result.data[0])
+        log_auditoria(db, "definir", "escala", response.get("id"), {"posto_id": payload.posto_id, "data": payload.data.isoformat()})
         if aviso:
             response["aviso"] = aviso
         return response
@@ -1396,6 +1736,7 @@ def gerar_recorrencia(payload: EscalaRecorrencia):
     try:
         if novas_escalas:
             db.table("escalas").insert(novas_escalas).execute()
+            log_auditoria(db, "gerar_recorrencia", "escala", payload.posto_id, {"criados": len(novas_escalas), "dias": payload.dias})
         return {
             "criados": len(novas_escalas),
             "dias_analisados": payload.dias,
@@ -1417,6 +1758,7 @@ def marcar_falta(escala_id: str, payload: EscalaFalta):
             .eq("id", escala_id)
             .execute()
         )
+        log_auditoria(db, "marcar_falta", "escala", escala_id, {"motivo": payload.motivo})
         return result.data[0]
     except HTTPException:
         raise
@@ -1436,6 +1778,7 @@ def substituir_escala(escala_id: str, payload: EscalaSubstituir):
             .eq("id", escala_id)
             .execute()
         )
+        log_auditoria(db, "substituir", "escala", escala_id, {"substituto_id": payload.substituto_id})
         return result.data[0]
     except HTTPException:
         raise
@@ -1470,6 +1813,7 @@ def create_financeiro(payload: LancamentoCreate):
     data.setdefault("origem", "outro")
     try:
         result = db.table("financeiro_lancamentos").insert(data).execute()
+        log_auditoria(db, "criar", "lancamento_financeiro", result.data[0]["id"])
         return with_live_status_financeiro(result.data)[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao criar lancamento: {exc}")
@@ -1485,6 +1829,7 @@ def update_financeiro(lancamento_id: str, payload: LancamentoUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Lancamento nao encontrado.")
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        log_auditoria(db, "atualizar", "lancamento_financeiro", lancamento_id, {"campos": list(data.keys())})
         return with_live_status_financeiro(result.data)[0]
     except HTTPException:
         raise
@@ -1503,6 +1848,7 @@ def pagar_financeiro(lancamento_id: str, payload: LancamentoPagar):
             "data_pagamento": (payload.data_pagamento or hoje_brasil()).isoformat(),
         }
         result = db.table("financeiro_lancamentos").update(data).eq("id", lancamento_id).execute()
+        log_auditoria(db, "pagar", "lancamento_financeiro", lancamento_id, {"data_pagamento": data["data_pagamento"]})
         return with_live_status_financeiro(result.data)[0]
     except HTTPException:
         raise
@@ -1546,6 +1892,8 @@ def gerar_mensalidades(payload: GerarMensalidades):
             "origem": "contrato",
         }).execute()
         criados += 1
+    if criados:
+        log_auditoria(db, "gerar_mensalidades", "lancamento_financeiro", None, {"mes": payload.mes, "criados": criados})
     return {"criados": criados, "ja_existentes": ja_existentes, "ignorados_sem_valor": ignorados}
 
 @app.get("/api/epis")
@@ -1566,6 +1914,7 @@ def create_epi(payload: EpiCreate):
     data.setdefault("data_entrega", hoje_brasil().isoformat())
     try:
         result = db.table("epis_entregues").insert(data).execute()
+        log_auditoria(db, "criar", "epi", result.data[0]["id"])
         return with_live_status(result.data)[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao registrar EPI: {exc}")
@@ -1581,11 +1930,52 @@ def update_epi(epi_id: str, payload: EpiUpdate):
         if not existing.data:
             raise HTTPException(status_code=404, detail="Registro de EPI nao encontrado.")
         result = db.table("epis_entregues").update(data).eq("id", epi_id).execute()
+        log_auditoria(db, "atualizar", "epi", epi_id, {"campos": list(data.keys())})
         return with_live_status(result.data)[0]
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao atualizar EPI: {exc}")
+
+@app.get("/api/afastamentos")
+def list_afastamentos(funcionario_id: str | None = None):
+    try:
+        query = get_supabase().table("afastamentos").select("*,funcionarios(nome)").order("data_inicio", desc=True)
+        if funcionario_id:
+            query = query.eq("funcionario_id", funcionario_id)
+        rows = with_live_status_afastamento(query.execute().data or [])
+        return {"items": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao consultar afastamentos: {exc}")
+
+@app.post("/api/afastamentos", status_code=201)
+def create_afastamento(payload: AfastamentoCreate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_none=True, mode="json")
+    try:
+        result = db.table("afastamentos").insert(data).execute()
+        log_auditoria(db, "criar", "afastamento", result.data[0]["id"], {"funcionario_id": payload.funcionario_id, "tipo": payload.tipo})
+        return with_live_status_afastamento(result.data)[0]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao registrar afastamento: {exc}")
+
+@app.put("/api/afastamentos/{afastamento_id}")
+def update_afastamento(afastamento_id: str, payload: AfastamentoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("afastamentos").select("id").eq("id", afastamento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Afastamento nao encontrado.")
+        result = db.table("afastamentos").update(data).eq("id", afastamento_id).execute()
+        log_auditoria(db, "atualizar", "afastamento", afastamento_id, {"campos": list(data.keys())})
+        return with_live_status_afastamento(result.data)[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar afastamento: {exc}")
 
 @app.get("/api/notificacoes")
 def notificacoes():
@@ -1784,10 +2174,105 @@ def relatorios():
     faltas = sum(1 for row in escalas_periodo if row.get("status") == "falta")
     absenteismo_pct = round((faltas / total_escalas * 100), 1) if total_escalas else 0.0
 
+    # Horas trabalhadas/extras do mes atual, calculadas a partir da escala real -
+    # aproximacao pra apoiar a folha (nao substitui o calculo legal exato de
+    # horas extras, que varia por regime/turno/convencao coletiva). Conta
+    # "previsto"/"confirmado" como dia trabalhado pelo titular; "substituido"
+    # conta pra quem efetivamente cobriu (substituto_id); "falta" nao conta.
+    escalas_mes = (
+        db.table("escalas")
+        .select("posto_id,funcionario_id,substituto_id,status,postos_trabalho(turno)")
+        .gte("data", inicio_mes.isoformat())
+        .lt("data", fim_mes.isoformat())
+        .execute()
+        .data
+        or []
+    )
+    dias_por_funcionario: dict[str, int] = {}
+    horas_por_funcionario: dict[str, float] = {}
+    dias_por_funcionario_e_posto: dict[tuple[str, str], int] = {}
+    for row in escalas_mes:
+        if row.get("status") == "falta":
+            continue
+        quem = row.get("substituto_id") if row.get("status") == "substituido" else row.get("funcionario_id")
+        if not quem:
+            continue
+        horas = horas_do_turno((row.get("postos_trabalho") or {}).get("turno"))
+        dias_por_funcionario[quem] = dias_por_funcionario.get(quem, 0) + 1
+        horas_por_funcionario[quem] = horas_por_funcionario.get(quem, 0) + horas
+        posto_id = row.get("posto_id")
+        if posto_id:
+            chave = (quem, posto_id)
+            dias_por_funcionario_e_posto[chave] = dias_por_funcionario_e_posto.get(chave, 0) + 1
+
+    funcionarios_map = {
+        row["id"]: row
+        for row in db.table("funcionarios").select("id,nome,cargo,condominio,salario_base").execute().data or []
+    }
+    horas_relatorio = []
+    for funcionario_id, total_horas in horas_por_funcionario.items():
+        info = funcionarios_map.get(funcionario_id, {})
+        horas_relatorio.append({
+            "funcionario_id": funcionario_id,
+            "funcionario": info.get("nome", "Desconhecido"),
+            "cargo": info.get("cargo"),
+            "condominio": info.get("condominio"),
+            "dias_trabalhados": dias_por_funcionario[funcionario_id],
+            "horas_trabalhadas": total_horas,
+            "horas_extras": max(0.0, total_horas - LIMITE_MENSAL_HORAS),
+        })
+    horas_relatorio.sort(key=lambda row: -row["horas_trabalhadas"])
+
+    # Margem por condominio: receita do contrato vs. custo de mao de obra dos
+    # postos daquele condominio. O salario mensal de cada funcionario e
+    # rateado proporcionalmente entre os postos em que ele trabalhou no mes
+    # (cobre substituicao, onde a pessoa cobre um posto que nao e o dela) -
+    # indicador central pra uma prestadora de servico, aproximado a partir do
+    # que a escala e o cadastro ja tem (nao substitui o calculo contabil exato).
+    custo_por_posto: dict[str, float] = {}
+    for (funcionario_id, posto_id), dias_no_posto in dias_por_funcionario_e_posto.items():
+        salario = float((funcionarios_map.get(funcionario_id) or {}).get("salario_base") or 0)
+        if not salario:
+            continue
+        total_dias = dias_por_funcionario.get(funcionario_id, 0)
+        proporcao = dias_no_posto / total_dias if total_dias else 0
+        custo_por_posto[posto_id] = custo_por_posto.get(posto_id, 0) + salario * proporcao
+
+    postos_rows = db.table("postos_trabalho").select("id,nome,condominio_id").execute().data or []
+    postos_por_condominio: dict[str, list] = {}
+    custo_por_condominio: dict[str, float] = {}
+    for posto in postos_rows:
+        cid = posto.get("condominio_id")
+        if not cid:
+            continue
+        custo_posto = round(custo_por_posto.get(posto["id"], 0), 2)
+        postos_por_condominio.setdefault(cid, []).append({"posto": posto["nome"], "custo_mao_de_obra": custo_posto})
+        custo_por_condominio[cid] = custo_por_condominio.get(cid, 0) + custo_posto
+
+    margem_por_condominio = []
+    for row in condominios_rows:
+        cid = row["id"]
+        receita = previsto_por_cond.get(cid, 0)
+        custo = round(custo_por_condominio.get(cid, 0), 2)
+        margem_por_condominio.append({
+            "condominio_id": cid,
+            "condominio": row["nome"],
+            "receita_mensal": receita,
+            "custo_mao_de_obra": custo,
+            "margem": round(receita - custo, 2),
+            "margem_pct": round((receita - custo) / receita * 100, 1) if receita else None,
+            "postos": sorted(postos_por_condominio.get(cid, []), key=lambda p: -p["custo_mao_de_obra"]),
+        })
+    margem_por_condominio.sort(key=lambda row: row["margem"])
+
     return {
         "faturamento_por_condominio": faturamento,
         "turnover": {"desligados_periodo": desligados_periodo, "ativos": ativos, "taxa_pct": turnover_pct},
         "absenteismo": {"faltas_periodo": faltas, "total_escalas_periodo": total_escalas, "taxa_pct": absenteismo_pct},
+        "horas_por_funcionario": horas_relatorio,
+        "margem_por_condominio": margem_por_condominio,
+        "mes_referencia": hoje.strftime("%Y-%m"),
+        "limite_mensal_horas": LIMITE_MENSAL_HORAS,
     }
 
 @app.get("/api/dashboard")
@@ -1804,6 +2289,16 @@ def dashboard():
         vencendo_ou_vencido.sort(key=lambda row: row.get("data_validade") or "")
         condominiums_count = len(db.table("condominios").select("id").execute().data or [])
         pending = [row for row in employees_rows if row.get("cargo") == "Pendente"]
+
+        hoje_iso = hoje_brasil().isoformat()
+        afastados_count = len(
+            db.table("afastamentos")
+            .select("id")
+            .lte("data_inicio", hoje_iso)
+            .gte("data_fim", hoje_iso)
+            .execute()
+            .data or []
+        )
 
         lancamentos = with_live_status_financeiro(
             db.table("financeiro_lancamentos").select("tipo,valor,status,vencimento").execute().data or []
@@ -1830,6 +2325,7 @@ def dashboard():
             "documentos": len(all_docs),
             "condominios": condominiums_count,
             "aguardando_cargo": len(pending),
+            "afastados_hoje": afastados_count,
             "vencidos": sum(1 for row in all_docs if row["status_validade"] == "vencido"),
             "vencendo": sum(1 for row in all_docs if row["status_validade"] == "vencendo"),
             "recentes": docs_rows,

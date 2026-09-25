@@ -1,12 +1,17 @@
 "use client";
 
 import { ChangeEvent, FormEvent, JSX, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ResponsiveContainer, ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  PieChart, Pie, Cell,
+} from "recharts";
 
 type Dashboard = {
   funcionarios: number;
   documentos: number;
   condominios: number;
   aguardando_cargo: number;
+  afastados_hoje: number;
   vencidos: number;
   vencendo: number;
   recentes: any[];
@@ -22,17 +27,46 @@ const STATUS_VALIDADE_LABEL: Record<string, string> = {
   nao_aplicavel: "—",
 };
 
-const API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+const TIPOS_AFASTAMENTO = ["Ferias", "AtestadoMedico", "LicencaMaternidade", "LicencaPaternidade", "Suspensao", "Outro"];
+const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
+  Ferias: "Férias",
+  AtestadoMedico: "Atestado médico",
+  LicencaMaternidade: "Licença maternidade",
+  LicencaPaternidade: "Licença paternidade",
+  Suspensao: "Suspensão",
+  Outro: "Outro",
+};
+const STATUS_AFASTAMENTO_LABEL: Record<string, string> = {
+  agendado: "Agendado",
+  em_andamento: "Em andamento",
+  concluido: "Concluído",
+};
+const STATUS_OCORRENCIA_LABEL: Record<string, string> = {
+  aberta: "Aberta",
+  em_andamento: "Em andamento",
+  resolvida: "Resolvida",
+};
+
+// Todo o trafego passa por este proxy same-origin (frontend/app/api/proxy) em
+// vez de chamar o backend do Render direto do navegador: o proxy exige a
+// sessao (life_auth, verificada no middleware) e injeta o segredo interno que
+// o Python passou a exigir. Excecao: upload de documentos, que usa um token
+// de curta duracao pra chamar o Render direto (ver DIRECT_API/uploadToken) -
+// a Vercel limita o corpo de uma function em 4.5MB, pequeno demais pra PDFs
+// escaneados de ate 30MB.
+const API = "/api/proxy";
+const DIRECT_API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
 const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
-const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico"];
+const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"];
 const PAPEL_LABEL: Record<string, string> = {
   admin: "Administrador",
   rh: "RH",
   financeiro: "Financeiro",
   operacional: "Operacional",
   sindico: "Síndico",
+  colaborador: "Colaborador",
 };
 const TURNOS = ["12x36 Diurno", "12x36 Noturno", "6x1 Diurno", "6x1 Noturno", "Comercial"];
 const ESCALA_STATUS_LABEL: Record<string, string> = {
@@ -51,6 +85,19 @@ const LANCAMENTO_STATUS_LABEL: Record<string, string> = {
 function formatMoney(value: any) {
   const n = Number(value);
   return isNaN(n) ? "—" : n.toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
+}
+
+const MES_CURTO = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+const CHART_PALETTE = ["#2563eb", "#38bdf8", "#16a34a", "#f59e0b", "#a855f7", "#94a3b8"];
+const CHART_TOOLTIP_STYLE = {
+  background: "#fff", border: "1px solid #e7e9f0", borderRadius: 10,
+  fontSize: 12, boxShadow: "0 10px 30px rgba(15,15,25,.08)", padding: "8px 12px",
+};
+
+// Converte o link "abrir" do Drive (.../view) pro formato embutivel em
+// iframe (.../preview) - se o link ja vier em outro formato, usa como esta.
+function drivePreviewUrl(viewUrl: string): string {
+  return viewUrl.replace(/\/view(\?.*)?$/, "/preview");
 }
 
 // "Hoje" pelo calendario local do navegador, nao UTC: Date().toISOString()
@@ -103,6 +150,11 @@ const ICON_PATHS: Record<string, JSX.Element> = {
   "alert-triangle": <><path d="M10.3 3.9 1.8 18a1 1 0 0 0 .9 1.5h18.6a1 1 0 0 0 .9-1.5L13.7 3.9a1 1 0 0 0-1.7 0Z" /><path d="M12 9v4M12 16.5h.01" /></>,
   "check-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M8 12.5l2.5 2.5 5.5-6" /></>,
   "x-circle": <><circle cx="12" cy="12" r="9.5" /><path d="M9 9l6 6M15 9l-6 6" /></>,
+  activity: <path d="M3 12h4l2.5 7 4-14 2.5 7h4" />,
+  umbrella: <><path d="M12 3a9 9 0 0 1 9 9H3a9 9 0 0 1 9-9Z" /><path d="M12 3v1" /><path d="M12 12v7a2 2 0 0 1-4 0" /></>,
+  "trending-up": <><path d="M3 16.5 10 9.5l4 4 7-7.5" /><path d="M15 6h6v6" /></>,
+  "trending-down": <><path d="M3 7.5 10 14.5l4-4 7 7.5" /><path d="M15 18h6v-6" /></>,
+  wallet: <><path d="M3 7a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M17 12h3v3h-3a1.5 1.5 0 0 1 0-3Z" /><path d="M3 8.5h18" /></>,
 };
 
 function Icon({name, size = 18}: {name: string; size?: number}) {
@@ -207,10 +259,9 @@ const CONDOMINIO_FORM_FIELDS: {key: string; label: string; kind?: "select" | "te
 ];
 
 async function api(path: string, init?: RequestInit) {
-  if (!API || API.includes("URL_DO_BACKEND")) throw new Error("NEXT_PUBLIC_API_URL ainda não configurada.");
   const response = await fetch(API + path, init);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Falha na comunicação com o backend.");
+  if (!response.ok) throw new Error(data.detail || data.error || "Falha na comunicação com o backend.");
   return data;
 }
 
@@ -220,6 +271,8 @@ export default function Home() {
   const [funcionarios, setFuncionarios] = useState<any[]>([]);
   const [documentos, setDocumentos] = useState<any[]>([]);
   const [condominios, setCondominios] = useState<any[]>([]);
+  const [ocorrencias, setOcorrencias] = useState<any[]>([]);
+  const [ocorrenciaModal, setOcorrenciaModal] = useState<{condominioId: string} | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -231,8 +284,10 @@ export default function Home() {
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
-  const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null} | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null; funcionario_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
+  const [auditoria, setAuditoria] = useState<any[]>([]);
   const [usuarioModal, setUsuarioModal] = useState<{mode: "create" | "edit"; usuario: any} | null>(null);
   const [contratos, setContratos] = useState<any[]>([]);
   const [contratoModal, setContratoModal] = useState<{mode: "create" | "edit"; contrato: any} | null>(null);
@@ -244,9 +299,13 @@ export default function Home() {
   const [gerarEscalaModal, setGerarEscalaModal] = useState<any | null>(null);
   const [lancamentos, setLancamentos] = useState<any[]>([]);
   const [lancamentoFiltro, setLancamentoFiltro] = useState("");
+  const [lancamentoTipoFiltro, setLancamentoTipoFiltro] = useState("");
   const [lancamentoModal, setLancamentoModal] = useState<{mode: "create" | "edit"; lancamento: any} | null>(null);
   const [epis, setEpis] = useState<any[]>([]);
+  const [onboarding, setOnboarding] = useState<any[]>([]);
   const [epiModal, setEpiModal] = useState<{mode: "create" | "edit"; epi: any} | null>(null);
+  const [afastamentos, setAfastamentos] = useState<any[]>([]);
+  const [afastamentoModal, setAfastamentoModal] = useState<{mode: "create" | "edit"; afastamento: any} | null>(null);
   const [alertas, setAlertas] = useState<any>({total: 0, vencidos: 0, vencendo: 0, items: []});
   const [relatorios, setRelatorios] = useState<any>({faturamento_por_condominio: [], turnover: {}, absenteismo: {}});
   const [toasts, setToasts] = useState<{id: number; type: "success" | "error"; message: string}[]>([]);
@@ -298,7 +357,7 @@ export default function Home() {
       setDrive(ds);
       setContratos(c.items || []);
       setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAlertas(), loadRelatorios()]);
+      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadOcorrencias(), loadAlertas(), loadRelatorios()]);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar dados.");
     }
@@ -306,7 +365,10 @@ export default function Home() {
 
   async function loadFinanceiro() {
     try {
-      const r = await api("/api/financeiro" + (lancamentoFiltro ? `?status=${lancamentoFiltro}` : ""));
+      // Carrega tudo de uma vez; status e tipo agora sao filtrados no cliente
+      // (useMemo abaixo), pra alimentar os KPIs/graficos com o universo
+      // completo e a tabela ficar instantanea ao trocar de filtro.
+      const r = await api("/api/financeiro");
       setLancamentos(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar financeiro.");
@@ -319,6 +381,63 @@ export default function Home() {
       setEpis(r.items || []);
     } catch (e: any) {
       setError(e.message || "Erro ao carregar EPIs.");
+    }
+  }
+
+  async function loadAfastamentos() {
+    try {
+      const r = await api("/api/afastamentos");
+      setAfastamentos(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar afastamentos.");
+    }
+  }
+
+  async function loadOnboarding() {
+    try {
+      const r = await api("/api/onboarding");
+      setOnboarding(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar checklist de onboarding.");
+    }
+  }
+
+  async function loadOcorrencias() {
+    try {
+      const r = await api("/api/ocorrencias");
+      setOcorrencias(r.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar ocorrências.");
+    }
+  }
+
+  async function saveOcorrencia(condominioId: string, titulo: string, descricao: string) {
+    await api("/api/ocorrencias", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({condominio_id: condominioId, titulo, descricao: descricao || undefined}),
+    });
+    setOcorrenciaModal(null);
+    pushToast("Ocorrência registrada.");
+    await loadOcorrencias();
+  }
+
+  async function marcarOcorrencia(id: string, status: string) {
+    let resposta: string | null = null;
+    if (status === "resolvida") {
+      resposta = await askPrompt("Resolver ocorrência", "Resposta para o síndico (opcional).");
+      if (resposta === null) return;
+    }
+    try {
+      await api(`/api/ocorrencias/${id}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status, ...(resposta ? {resposta} : {})}),
+      });
+      pushToast("Ocorrência atualizada.");
+      await loadOcorrencias();
+    } catch (e: any) {
+      pushToast(e.message || "Erro ao atualizar ocorrência.", "error");
     }
   }
 
@@ -349,6 +468,15 @@ export default function Home() {
     }
   }
 
+  async function loadAuditoria() {
+    try {
+      const a = await api("/api/auditoria?limit=200");
+      setAuditoria(a.items || []);
+    } catch (e: any) {
+      setError(e.message || "Erro ao carregar auditoria.");
+    }
+  }
+
   async function loadEscalas(inicioSemana: string) {
     try {
       const r = await api(`/api/escalas?data=${inicioSemana}&dias=7`);
@@ -364,10 +492,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => { loadEscalas(semanaInicio); }, [semanaInicio]);
-  useEffect(() => { loadFinanceiro(); }, [lancamentoFiltro]);
 
   useEffect(() => {
-    if (me?.papel === "admin") loadUsuarios();
+    if (me?.papel === "admin") { loadUsuarios(); loadAuditoria(); }
   }, [me?.papel]);
 
   const filteredEmployees = useMemo(() => funcionarios.filter(item =>
@@ -381,6 +508,101 @@ export default function Home() {
   const filteredCondos = useMemo(() => condominios.filter(item =>
     JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
   ), [condominios, query]);
+
+  const documentosPorStatus = useMemo(() => {
+    const contagem: Record<string, number> = {};
+    for (const doc of documentos) {
+      const status = doc.status_validade || "nao_aplicavel";
+      contagem[status] = (contagem[status] || 0) + 1;
+    }
+    return Object.entries(contagem)
+      .map(([status, total]) => ({status, nome: STATUS_VALIDADE_LABEL[status] || status, total}))
+      .filter(row => row.total > 0);
+  }, [documentos]);
+
+  const funcionariosPorCargo = useMemo(() => {
+    const contagem: Record<string, number> = {};
+    for (const f of funcionarios) {
+      if (f.status === "inativo") continue;
+      const cargo = f.cargo || "Pendente";
+      contagem[cargo] = (contagem[cargo] || 0) + 1;
+    }
+    return Object.entries(contagem)
+      .map(([cargo, total]) => ({cargo, total}))
+      .sort((a, b) => b.total - a.total);
+  }, [funcionarios]);
+
+  const filteredLancamentos = useMemo(() => lancamentos.filter(item =>
+    (!lancamentoFiltro || item.status_calculado === lancamentoFiltro) &&
+    (!lancamentoTipoFiltro || item.tipo === lancamentoTipoFiltro) &&
+    JSON.stringify(item).toLowerCase().includes(query.toLowerCase())
+  ), [lancamentos, lancamentoFiltro, lancamentoTipoFiltro, query]);
+
+  // KPIs e series dos graficos sempre vem do universo COMPLETO de lancamentos
+  // (nao dos filtrados da tabela), pra nao mudar de valor so porque a pessoa
+  // esta olhando uma view filtrada da lista abaixo.
+  const financeiroStats = useMemo(() => {
+    const hoje = new Date();
+    const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+    let aReceber = 0, aPagar = 0, recebidoMes = 0, pagoMes = 0, atrasadoReceita = 0, atrasadoDespesa = 0;
+    const porMes: Record<string, {receita: number; despesa: number}> = {};
+    const porCategoria: Record<string, number> = {};
+    const porCondominio: Record<string, number> = {};
+
+    for (const l of lancamentos) {
+      const valor = Number(l.valor) || 0;
+      const isReceita = l.tipo === "receita";
+      if (l.status_calculado === "pendente" || l.status_calculado === "atrasado") {
+        if (isReceita) aReceber += valor; else aPagar += valor;
+      }
+      if (l.status_calculado === "atrasado") {
+        if (isReceita) atrasadoReceita += valor; else atrasadoDespesa += valor;
+      }
+      if (l.status_calculado === "pago" && (l.data_pagamento || "").slice(0, 7) === mesAtual) {
+        if (isReceita) recebidoMes += valor; else pagoMes += valor;
+      }
+      const mesRef = (l.vencimento || l.data_pagamento || "").slice(0, 7);
+      if (mesRef) {
+        porMes[mesRef] = porMes[mesRef] || {receita: 0, despesa: 0};
+        if (isReceita) porMes[mesRef].receita += valor; else porMes[mesRef].despesa += valor;
+      }
+      if (!isReceita) {
+        const cat = l.categoria || l.descricao || "Outro";
+        porCategoria[cat] = (porCategoria[cat] || 0) + valor;
+      } else {
+        const condo = l.condominios?.nome || "Sem condomínio";
+        porCondominio[condo] = (porCondominio[condo] || 0) + valor;
+      }
+    }
+
+    const mesesOrdenados = Object.keys(porMes).sort().slice(-6);
+    const serieMensal = mesesOrdenados.map(m => {
+      const [ano, mes] = m.split("-");
+      const receita = porMes[m].receita, despesa = porMes[m].despesa;
+      return {mes: `${MES_CURTO[Number(mes) - 1]}/${ano.slice(2)}`, receita, despesa, saldo: receita - despesa};
+    });
+
+    const categoriasOrdenadas = Object.entries(porCategoria).sort((a, b) => b[1] - a[1]);
+    const topCategorias = categoriasOrdenadas.slice(0, 5);
+    const outrosCategorias = categoriasOrdenadas.slice(5).reduce((soma, [, v]) => soma + v, 0);
+    const distribuicaoCategorias = [...topCategorias, ...(outrosCategorias > 0 ? [["Outros", outrosCategorias] as [string, number]] : [])]
+      .map(([nome, valor]) => ({nome, valor}));
+
+    const condominiosOrdenados = Object.entries(porCondominio).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([nome, valor]) => ({nome, valor}));
+
+    return {
+      aReceber, aPagar, recebidoMes, pagoMes, atrasadoReceita, atrasadoDespesa,
+      saldoMes: recebidoMes - pagoMes,
+      inadimplencia: atrasadoReceita + atrasadoDespesa,
+      serieMensal, distribuicaoCategorias, condominiosOrdenados,
+    };
+  }, [lancamentos]);
+
+  function filtrarFinanceiro(status: string, tipo: string) {
+    setLancamentoFiltro(status);
+    setLancamentoTipoFiltro(tipo);
+  }
 
   function chooseFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.target.files || []).filter(file =>
@@ -399,7 +621,18 @@ export default function Home() {
     files.forEach(file => form.append("files", file));
     const timer = window.setInterval(() => setProgress(p => p < 85 ? p + 5 : p), 450);
     try {
-      const payload = await api("/api/documentos/processar", {method: "POST", body: form});
+      // Upload vai direto pro Render (nao pelo /api/proxy): a Vercel limita o
+      // corpo de uma function em 4.5MB, pequeno demais pra PDF escaneado.
+      // O token de curta duracao prova que quem esta chamando tem sessao
+      // valida, sem precisar do segredo interno (esse nunca vai pro navegador).
+      const {token} = await api("/api/documentos/upload-auth", {method: "POST"});
+      const uploadResponse = await fetch(DIRECT_API + "/api/documentos/processar", {
+        method: "POST",
+        headers: {"X-Upload-Token": token},
+        body: form,
+      });
+      const payload = await uploadResponse.json().catch(() => ({}));
+      if (!uploadResponse.ok) throw new Error(payload.detail || "Falha ao processar documentos.");
       setResults(payload.resultados || []);
       setProgress(100);
       await refresh();
@@ -508,6 +741,7 @@ export default function Home() {
       nome: data.nome,
       papel: data.papel,
       condominio_id: data.papel === "sindico" ? (data.condominio_id || null) : null,
+      funcionario_id: data.papel === "colaborador" ? (data.funcionario_id || null) : null,
     };
     if (data.senha) payload.senha = data.senha;
     if (mode === "edit" && id) {
@@ -720,39 +954,73 @@ export default function Home() {
     await loadAlertas();
   }
 
+  async function saveAfastamento(data: Record<string, any>) {
+    const mode = afastamentoModal?.mode;
+    const id = afastamentoModal?.afastamento?.id;
+    const clean: Record<string, any> = {};
+    for (const key of ["funcionario_id", "tipo", "data_inicio", "data_fim", "observacao"]) {
+      const value = data[key];
+      if (value === undefined || value === "") continue;
+      clean[key] = value;
+    }
+    if (mode === "edit" && id) {
+      delete clean.funcionario_id;
+      await api(`/api/afastamentos/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    } else {
+      await api("/api/afastamentos", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(clean)});
+    }
+    setAfastamentoModal(null);
+    pushToast(mode === "edit" ? "Afastamento atualizado." : "Afastamento registrado.");
+    await refresh();
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", {method: "POST"});
     window.location.href = "/login";
   }
 
+  function openPreview(url: string) {
+    setPreviewUrl(drivePreviewUrl(url));
+  }
+
   const isSindico = me?.papel === "sindico";
+  const isColaborador = me?.papel === "colaborador";
   const navSections: {label: string; items: [string, string, string][]}[] = isSindico ? [
     {label: "", items: [["meu-condominio", "Meu condomínio", "building"]]},
+  ] : isColaborador ? [
+    {label: "", items: [["minha-escala", "Minha escala", "calendar"]]},
   ] : [
     {label: "Operação", items: [
       ["visao", "Visão geral", "home"],
       ["alertas", "Alertas", "bell"],
+      ["ocorrencias", "Ocorrências", "alert-triangle"],
       ["postos", "Postos & Escalas", "calendar"],
       ["processar", "Processar documentos", "upload"],
     ]},
     {label: "Cadastros", items: [
       ["funcionarios", "Funcionários", "users"],
+      ["onboarding", "Onboarding", "check-circle"],
       ["condominios", "Condomínios", "building"],
       ["documentos", "Documentos", "file-text"],
       ["epis", "EPIs", "shield"],
+      ["afastamentos", "Férias & Afastamentos", "umbrella"],
     ]},
     {label: "Negócios", items: [
       ["contratos", "Contratos", "briefcase"],
       ["financeiro", "Financeiro", "dollar-sign"],
       ["relatorios", "Relatórios", "bar-chart"],
     ]},
-    ...(me?.papel === "admin" ? [{label: "Sistema", items: [["usuarios", "Usuários", "user-cog"]] as [string, string, string][]}] : []),
+    ...(me?.papel === "admin" ? [{label: "Sistema", items: [
+      ["usuarios", "Usuários", "user-cog"],
+      ["auditoria", "Auditoria", "activity"],
+    ] as [string, string, string][]}] : []),
   ];
   const tabs = navSections.flatMap(s => s.items);
 
   useEffect(() => {
     if (isSindico && tab !== "meu-condominio") setTab("meu-condominio");
-  }, [isSindico]);
+    if (isColaborador && tab !== "minha-escala") setTab("minha-escala");
+  }, [isSindico, isColaborador]);
 
   return (
     <div className="app-shell">
@@ -768,6 +1036,8 @@ export default function Home() {
                     <Icon name={icon} size={17} />
                     <span>{label}</span>
                     {key === "alertas" && alertas.total > 0 && <span className="nav-badge">{alertas.total}</span>}
+                    {key === "onboarding" && onboarding.length > 0 && <span className="nav-badge">{onboarding.length}</span>}
+                    {key === "ocorrencias" && ocorrencias.filter((o: any) => o.status !== "resolvida").length > 0 && <span className="nav-badge">{ocorrencias.filter((o: any) => o.status !== "resolvida").length}</span>}
                   </button>
                 ))}
               </nav>
@@ -794,6 +1064,7 @@ export default function Home() {
             <section className="hero"><div><p className="eyebrow">BASE DO CRM</p><h2>Documentos organizados. Operação pronta para crescer.</h2><p>Acompanhe funcionários, documentos e condomínios em uma única visão.</p></div><button className="primary" onClick={() => setTab("processar")}>Processar documentos</button></section>
             <section className="stats">
               <article><div className="stat-icon"><Icon name="users" size={16} /></div><span>Funcionários</span><strong>{dashboard?.funcionarios ?? "—"}</strong><small>{dashboard?.aguardando_cargo ?? 0} aguardando cargo</small></article>
+              <article className={(dashboard?.afastados_hoje ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="umbrella" size={16} /></div><span>Afastados hoje</span><strong>{dashboard?.afastados_hoje ?? 0}</strong><small>Férias, atestados e licenças</small></article>
               <article><div className="stat-icon"><Icon name="file-text" size={16} /></div><span>Documentos</span><strong>{dashboard?.documentos ?? "—"}</strong><small>Registrados no CRM</small></article>
               <article><div className="stat-icon"><Icon name="building" size={16} /></div><span>Condomínios</span><strong>{dashboard?.condominios ?? "—"}</strong><small>Identificados na base</small></article>
               <article><div className="stat-icon"><Icon name="upload" size={16} /></div><span>Fluxo</span><strong>{drive?.status === "ok" ? "OK" : "—"}</strong><small>Claude → Drive → Supabase</small></article>
@@ -801,14 +1072,46 @@ export default function Home() {
               <article><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A receber</span><strong>{formatMoney(dashboard?.financeiro?.a_receber ?? 0)}</strong><small>Pendente + atrasado</small></article>
               <article className={(dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0) > 0 ? "alert-stat" : undefined}><div className="stat-icon"><Icon name="dollar-sign" size={16} /></div><span>A pagar</span><strong>{formatMoney(dashboard?.financeiro?.a_pagar ?? 0)}</strong><small>{formatMoney((dashboard?.financeiro?.vencido_receita ?? 0) + (dashboard?.financeiro?.vencido_despesa ?? 0))} em atraso</small></article>
             </section>
+            <section className="chart-grid-even">
+              <div className="panel">
+                <div className="panel-head"><h3>Documentos por status</h3><span>{documentos.length} no total</span></div>
+                {!documentosPorStatus.length ? <div className="empty">Nenhum documento registrado.</div> : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie data={documentosPorStatus} dataKey="total" nameKey="nome" innerRadius={50} outerRadius={85} paddingAngle={2}>
+                        {documentosPorStatus.map((row) => (
+                          <Cell key={row.status} fill={row.status === "vencido" ? "#ef4444" : row.status === "vencendo" ? "#f59e0b" : row.status === "valido" ? "#16a34a" : "#94a3b8"} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                      <Legend wrapperStyle={{fontSize: 12}} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+              <div className="panel">
+                <div className="panel-head"><h3>Funcionários por cargo</h3><span>Ativos</span></div>
+                {!funcionariosPorCargo.length ? <div className="empty">Nenhum funcionário ativo.</div> : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={funcionariosPorCargo}>
+                      <CartesianGrid stroke="#eef0f6" vertical={false} />
+                      <XAxis dataKey="cargo" tick={{fontSize: 11.5, fill: "#6b7280"}} axisLine={{stroke: "#e7e9f0"}} tickLine={false} />
+                      <YAxis allowDecimals={false} tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} width={28} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                      <Bar dataKey="total" name="Funcionários" fill="#2563eb" radius={[6, 6, 0, 0]} maxBarSize={44} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </section>
             <section className="grid-two">
-              <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" /></div>
+              <div className="panel"><div className="panel-head"><h3>Documentos recentes</h3><span>Últimos itens</span></div><DataTable rows={dashboard?.recentes || []} type="docs" onPreview={openPreview} /></div>
               <div className="panel"><div className="panel-head"><h3>Pendências</h3><span>Aguardando cargo</span></div><DataTable rows={dashboard?.pendencias || []} type="employees" /></div>
             </section>
             {!!dashboard?.vencimentos?.length && (
               <section className="panel">
                 <div className="panel-head"><h3>Documentos vencidos ou vencendo</h3><span>Próximos 30 dias</span></div>
-                <DataTable rows={dashboard.vencimentos} type="docs" />
+                <DataTable rows={dashboard.vencimentos} type="docs" onPreview={openPreview} />
               </section>
             )}
           </>
@@ -824,7 +1127,7 @@ export default function Home() {
             </label>
             {processing && <div className="progress"><div style={{width: progress + "%"}}></div></div>}
             <button className="primary" disabled={!files.length || processing} onClick={processFiles}>{processing ? "Processando..." : "Processar documentos"}</button>
-            {!!results.length && <div className="results">{results.map((r, i) => <article key={i} className={"result " + r.status}><div><b>{r.arquivo_original}</b><span>{r.status}</span></div><p>{r.mensagem || [r.funcionario, r.documento, r.condominio, r.cargo, r.ano].filter(Boolean).join(" • ")}</p>{r.arquivo_drive_url && <a href={r.arquivo_drive_url} target="_blank">Abrir no Drive</a>}</article>)}</div>}
+            {!!results.length && <div className="results">{results.map((r, i) => <article key={i} className={"result " + r.status}><div><b>{r.arquivo_original}</b><span>{r.status}</span></div><p>{r.mensagem || [r.funcionario, r.documento, r.condominio, r.cargo, r.ano].filter(Boolean).join(" • ")}{r.versao_anterior ? " • renovação (versão anterior linkada)" : ""}</p>{r.arquivo_drive_url && <a href={r.arquivo_drive_url} target="_blank">Abrir no Drive</a>}</article>)}</div>}
           </section>
         )}
 
@@ -842,7 +1145,25 @@ export default function Home() {
             />
           </section>
         )}
-        {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" /></section>}
+        {tab === "onboarding" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Checklist de onboarding</h3><span>{onboarding.length} funcionário(s) com pendência</span></div>
+            </div>
+            <p className="muted" style={{margin: "0 0 14px"}}>Documentos obrigatórios por cargo que ainda faltam para cada funcionário ativo. Quem está com o checklist completo não aparece aqui.</p>
+            {!onboarding.length ? <div className="empty">Nenhuma pendência — todo mundo com o checklist completo.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Cargo</th><th>Condomínio</th><th>Documentos faltantes</th></tr></thead><tbody>
+                {onboarding.map((o: any) => <tr key={o.funcionario_id}>
+                  <td>{o.funcionario}</td>
+                  <td><span className="badge">{o.cargo}</span></td>
+                  <td>{o.condominio || "—"}</td>
+                  <td>{o.documentos_faltantes.map((d: string) => <span key={d} className="badge warn" style={{marginRight: 6}}>{d}</span>)}</td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "documentos" && <section className="panel"><div className="panel-head"><h3>Documentos</h3><span>{filteredDocuments.length} registros</span></div><DataTable rows={filteredDocuments} type="docs" onPreview={openPreview} /></section>}
         {tab === "condominios" && (
           <section className="panel">
             <div className="panel-head">
@@ -935,40 +1256,136 @@ export default function Home() {
           </>
         )}
         {tab === "financeiro" && (
-          <section className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>Financeiro</h3>
-                <span>{lancamentos.length} lançamentos</span>
+          <>
+            <section className="stats fin-kpis">
+              <article className={"clickable" + (!lancamentoFiltro && lancamentoTipoFiltro === "receita" ? " active" : "")} onClick={() => filtrarFinanceiro("", "receita")}>
+                <div className="stat-icon green"><Icon name="trending-up" size={17} /></div>
+                <span>A receber</span>
+                <strong>{formatMoney(financeiroStats.aReceber)}</strong>
+                <small>Pendente + atrasado</small>
+              </article>
+              <article className={"clickable" + (!lancamentoFiltro && lancamentoTipoFiltro === "despesa" ? " active" : "")} onClick={() => filtrarFinanceiro("", "despesa")}>
+                <div className="stat-icon"><Icon name="trending-down" size={17} /></div>
+                <span>A pagar</span>
+                <strong>{formatMoney(financeiroStats.aPagar)}</strong>
+                <small>Pendente + atrasado</small>
+              </article>
+              <article className={"clickable" + (lancamentoFiltro === "pago" && lancamentoTipoFiltro === "receita" ? " active" : "")} onClick={() => filtrarFinanceiro("pago", "receita")}>
+                <div className="stat-icon green"><Icon name="wallet" size={17} /></div>
+                <span>Recebido este mês</span>
+                <strong>{formatMoney(financeiroStats.recebidoMes)}</strong>
+                <small>Pago no mês atual</small>
+              </article>
+              <article className={"clickable" + (lancamentoFiltro === "pago" && lancamentoTipoFiltro === "despesa" ? " active" : "")} onClick={() => filtrarFinanceiro("pago", "despesa")}>
+                <div className="stat-icon"><Icon name="wallet" size={17} /></div>
+                <span>Pago este mês</span>
+                <strong>{formatMoney(financeiroStats.pagoMes)}</strong>
+                <small>Despesas quitadas</small>
+              </article>
+              <article>
+                <div className={"stat-icon " + (financeiroStats.saldoMes >= 0 ? "green" : "red")}><Icon name="bar-chart" size={17} /></div>
+                <span>Saldo do mês</span>
+                <strong style={{color: financeiroStats.saldoMes >= 0 ? "var(--green)" : "var(--red)"}}>{formatMoney(financeiroStats.saldoMes)}</strong>
+                <small>Recebido − pago</small>
+              </article>
+              <article className={"alert-stat clickable" + (lancamentoFiltro === "atrasado" && !lancamentoTipoFiltro ? " active" : "")} onClick={() => filtrarFinanceiro("atrasado", "")}>
+                <div className="stat-icon"><Icon name="alert-triangle" size={17} /></div>
+                <span>Inadimplência</span>
+                <strong>{formatMoney(financeiroStats.inadimplencia)}</strong>
+                <small>Vencido sem pagamento</small>
+              </article>
+            </section>
+
+            <section className="chart-grid">
+              <div className="panel">
+                <div className="panel-head"><h3>Receita x despesa</h3><span>Últimos {financeiroStats.serieMensal.length || 6} meses</span></div>
+                {!financeiroStats.serieMensal.length ? <div className="empty">Sem lançamentos com data suficiente.</div> : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <ComposedChart data={financeiroStats.serieMensal}>
+                      <CartesianGrid stroke="#eef0f6" vertical={false} />
+                      <XAxis dataKey="mes" tick={{fontSize: 12, fill: "#6b7280"}} axisLine={{stroke: "#e7e9f0"}} tickLine={false} />
+                      <YAxis tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} width={68} tickFormatter={v => formatMoney(v)} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                      <Legend wrapperStyle={{fontSize: 12}} />
+                      <Bar dataKey="receita" name="Receita" fill="#16a34a" radius={[6, 6, 0, 0]} maxBarSize={28} />
+                      <Bar dataKey="despesa" name="Despesa" fill="#ef4444" radius={[6, 6, 0, 0]} maxBarSize={28} />
+                      <Line type="monotone" dataKey="saldo" name="Saldo" stroke="#2563eb" strokeWidth={2.5} dot={{r: 3}} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-              <div className="row-actions">
-                <select value={lancamentoFiltro} onChange={e => setLancamentoFiltro(e.target.value)}>
-                  <option value="">Todos os status</option>
-                  <option value="pendente">Pendente</option>
-                  <option value="atrasado">Atrasado</option>
-                  <option value="pago">Pago</option>
-                </select>
-                <button onClick={gerarMensalidades}>Gerar cobranças do mês</button>
-                <button className="primary" onClick={() => setLancamentoModal({mode: "create", lancamento: {}})}>Novo lançamento</button>
+              <div className="panel">
+                <div className="panel-head"><h3>Despesas por categoria</h3><span>Distribuição</span></div>
+                {!financeiroStats.distribuicaoCategorias.length ? <div className="empty">Sem despesas registradas.</div> : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie data={financeiroStats.distribuicaoCategorias} dataKey="valor" nameKey="nome" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                        {financeiroStats.distribuicaoCategorias.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />)}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                      <Legend wrapperStyle={{fontSize: 11.5}} layout="vertical" verticalAlign="middle" align="right" />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-            </div>
-            {!lancamentos.length ? <div className="empty">Nenhum lançamento encontrado.</div> : (
-              <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Condomínio/Funcionário</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr></thead><tbody>
-                {lancamentos.map((l: any) => <tr key={l.id}>
-                  <td><span className={"badge " + (l.tipo === "despesa" ? "warn" : "")}>{l.tipo === "receita" ? "Receita" : "Despesa"}</span></td>
-                  <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
-                  <td>{l.categoria || l.descricao || "—"}</td>
-                  <td>{formatMoney(l.valor)}</td>
-                  <td>{l.vencimento || "—"}</td>
-                  <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
-                  <td className="row-actions">
-                    <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
-                    {l.status_calculado !== "pago" && <button className="link-btn" onClick={() => marcarPago(l.id)}>Marcar pago</button>}
-                  </td>
-                </tr>)}
-              </tbody></table></div>
+            </section>
+
+            {!!financeiroStats.condominiosOrdenados.length && (
+              <section className="panel">
+                <div className="panel-head"><h3>Receita por condomínio</h3><span>Top {financeiroStats.condominiosOrdenados.length}</span></div>
+                <ResponsiveContainer width="100%" height={Math.max(180, financeiroStats.condominiosOrdenados.length * 44)}>
+                  <ComposedChart data={financeiroStats.condominiosOrdenados} layout="vertical" margin={{left: 8}}>
+                    <CartesianGrid stroke="#eef0f6" horizontal={false} />
+                    <XAxis type="number" tick={{fontSize: 11, fill: "#9aa1ac"}} axisLine={false} tickLine={false} tickFormatter={v => formatMoney(v)} />
+                    <YAxis type="category" dataKey="nome" tick={{fontSize: 12.5, fill: "#13151a"}} axisLine={false} tickLine={false} width={150} />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: any) => formatMoney(v)} />
+                    <Bar dataKey="valor" name="Receita" fill="#2563eb" radius={[0, 6, 6, 0]} maxBarSize={22} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </section>
             )}
-          </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Lançamentos</h3>
+                  <span>{filteredLancamentos.length} de {lancamentos.length} lançamentos{(lancamentoFiltro || lancamentoTipoFiltro) ? " (filtrado)" : ""}</span>
+                </div>
+                <div className="row-actions">
+                  <select value={lancamentoTipoFiltro} onChange={e => setLancamentoTipoFiltro(e.target.value)}>
+                    <option value="">Receita e despesa</option>
+                    <option value="receita">Só receita</option>
+                    <option value="despesa">Só despesa</option>
+                  </select>
+                  <select value={lancamentoFiltro} onChange={e => setLancamentoFiltro(e.target.value)}>
+                    <option value="">Todos os status</option>
+                    <option value="pendente">Pendente</option>
+                    <option value="atrasado">Atrasado</option>
+                    <option value="pago">Pago</option>
+                  </select>
+                  {(lancamentoFiltro || lancamentoTipoFiltro) && <button className="link-btn" onClick={() => filtrarFinanceiro("", "")}>Limpar filtros</button>}
+                  <button onClick={gerarMensalidades}>Gerar cobranças do mês</button>
+                  <button className="primary" onClick={() => setLancamentoModal({mode: "create", lancamento: {}})}>Novo lançamento</button>
+                </div>
+              </div>
+              {!filteredLancamentos.length ? <div className="empty">Nenhum lançamento encontrado.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Condomínio/Funcionário</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                  {filteredLancamentos.map((l: any) => <tr key={l.id}>
+                    <td><span className={"badge " + (l.tipo === "despesa" ? "warn" : "")}><Icon name={l.tipo === "receita" ? "trending-up" : "trending-down"} size={12} />{l.tipo === "receita" ? "Receita" : "Despesa"}</span></td>
+                    <td>{l.condominios?.nome || l.funcionarios?.nome || "—"}</td>
+                    <td>{l.categoria || l.descricao || "—"}</td>
+                    <td style={{color: l.tipo === "despesa" ? "var(--red)" : "var(--green)", fontWeight: 700}}>{formatMoney(l.valor)}</td>
+                    <td>{l.vencimento || "—"}</td>
+                    <td><span className={"badge " + (l.status_calculado === "atrasado" ? "danger" : l.status_calculado === "pago" ? "" : "warn")}>{LANCAMENTO_STATUS_LABEL[l.status_calculado] || l.status_calculado}</span></td>
+                    <td className="row-actions">
+                      <button className="link-btn" onClick={() => setLancamentoModal({mode: "edit", lancamento: l})}>Editar</button>
+                      {l.status_calculado !== "pago" && <button className="link-btn" onClick={() => marcarPago(l.id)}>Marcar pago</button>}
+                    </td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+          </>
         )}
         {tab === "epis" && (
           <section className="panel">
@@ -985,6 +1402,26 @@ export default function Home() {
                   <td>{e.data_validade || "—"}</td>
                   <td><span className={"badge " + (e.status_validade === "vencido" ? "danger" : e.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[e.status_validade] || "—"}</span></td>
                   <td className="row-actions"><button className="link-btn" onClick={() => setEpiModal({mode: "edit", epi: e})}>Editar</button></td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "afastamentos" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Férias & Afastamentos</h3><span>{afastamentos.length} registros{dashboard?.afastados_hoje ? ` · ${dashboard.afastados_hoje} afastado(s) hoje` : ""}</span></div>
+              <button className="primary" onClick={() => setAfastamentoModal({mode: "create", afastamento: {}})}>Novo afastamento</button>
+            </div>
+            {!afastamentos.length ? <div className="empty">Nenhum afastamento registrado.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Tipo</th><th>Início</th><th>Fim</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+                {afastamentos.map((a: any) => <tr key={a.id}>
+                  <td>{a.funcionarios?.nome || "—"}</td>
+                  <td>{TIPO_AFASTAMENTO_LABEL[a.tipo] || a.tipo}</td>
+                  <td>{a.data_inicio}</td>
+                  <td>{a.data_fim}</td>
+                  <td><span className={"badge " + (a.status === "em_andamento" ? "warn" : "")}>{STATUS_AFASTAMENTO_LABEL[a.status] || a.status}</span></td>
+                  <td className="row-actions"><button className="link-btn" onClick={() => setAfastamentoModal({mode: "edit", afastamento: a})}>Editar</button></td>
                 </tr>)}
               </tbody></table></div>
             )}
@@ -1008,6 +1445,28 @@ export default function Home() {
             )}
           </section>
         )}
+        {tab === "ocorrencias" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Ocorrências</h3><span>{ocorrencias.length} registradas pelos síndicos</span></div>
+            </div>
+            {!ocorrencias.length ? <div className="empty">Nenhuma ocorrência registrada.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Condomínio</th><th>Título</th><th>Descrição</th><th>Status</th><th>Resposta</th><th>Ações</th></tr></thead><tbody>
+                {ocorrencias.map((o: any) => <tr key={o.id}>
+                  <td>{o.condominios?.nome || "—"}</td>
+                  <td>{o.titulo}</td>
+                  <td>{o.descricao || "—"}</td>
+                  <td><span className={"badge " + (o.status === "aberta" ? "danger" : o.status === "em_andamento" ? "warn" : "")}>{STATUS_OCORRENCIA_LABEL[o.status] || o.status}</span></td>
+                  <td>{o.resposta || "—"}</td>
+                  <td className="row-actions">
+                    {o.status !== "em_andamento" && o.status !== "resolvida" && <button className="link-btn" onClick={() => marcarOcorrencia(o.id, "em_andamento")}>Marcar em andamento</button>}
+                    {o.status !== "resolvida" && <button className="link-btn" onClick={() => marcarOcorrencia(o.id, "resolvida")}>Resolver</button>}
+                  </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
         {tab === "relatorios" && (
           <>
             <section className="stats">
@@ -1027,12 +1486,48 @@ export default function Home() {
               )}
             </section>
             <section className="panel">
+              <div className="panel-head">
+                <div><h3>Margem por condomínio</h3><span>Mês {relatorios.mes_referencia || "atual"} · receita do contrato vs. custo de mão de obra</span></div>
+              </div>
+              <p className="muted" style={{margin: "0 0 14px"}}>Custo de mão de obra estimado a partir do salário-base dos funcionários escalados em cada posto no mês (rateado quando alguém cobre postos diferentes). Indicador aproximado, não substitui o cálculo contábil exato.</p>
+              {!relatorios.margem_por_condominio?.length ? <div className="empty">Sem condomínios ativos.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Condomínio</th><th>Receita mensal</th><th>Custo de mão de obra</th><th>Margem</th><th>Postos (custo)</th></tr></thead><tbody>
+                  {relatorios.margem_por_condominio.map((r: any) => <tr key={r.condominio_id}>
+                    <td>{r.condominio}</td>
+                    <td>{formatMoney(r.receita_mensal)}</td>
+                    <td>{formatMoney(r.custo_mao_de_obra)}</td>
+                    <td style={{color: r.margem < 0 ? "var(--red)" : "var(--green)", fontWeight: 700}}>{formatMoney(r.margem)}{r.margem_pct !== null ? ` (${r.margem_pct}%)` : ""}</td>
+                    <td>{r.postos?.length ? r.postos.map((p: any) => `${p.posto}: ${formatMoney(p.custo_mao_de_obra)}`).join(" · ") : "—"}</td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+            <section className="panel">
+              <div className="panel-head">
+                <div><h3>Horas trabalhadas / extras</h3><span>Mês {relatorios.mes_referencia || "atual"} · estimado a partir da escala</span></div>
+              </div>
+              <p className="muted" style={{margin: "0 0 14px"}}>Aproximação para apoiar a folha (12x36 = 12h/dia, 6x1 e comercial = 8h/dia), acima de {relatorios.limite_mensal_horas ?? 220}h/mês conta como hora extra. Não substitui o cálculo legal exato.</p>
+              {!relatorios.horas_por_funcionario?.length ? <div className="empty">Nenhuma escala registrada no mês.</div> : (
+                <div className="table-wrap"><table><thead><tr><th>Funcionário</th><th>Cargo</th><th>Condomínio</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Horas extras</th></tr></thead><tbody>
+                  {relatorios.horas_por_funcionario.map((r: any) => <tr key={r.funcionario_id}>
+                    <td>{r.funcionario}</td>
+                    <td>{r.cargo || "—"}</td>
+                    <td>{r.condominio || "—"}</td>
+                    <td>{r.dias_trabalhados}</td>
+                    <td>{r.horas_trabalhadas}h</td>
+                    <td>{r.horas_extras > 0 ? <span className="badge warn">{r.horas_extras}h</span> : "—"}</td>
+                  </tr>)}
+                </tbody></table></div>
+              )}
+            </section>
+            <section className="panel">
               <div className="panel-head"><h3>Exportar dados</h3><span>CSV, abre direto no Excel/Sheets</span></div>
               <div className="row-actions">
                 <button onClick={() => downloadCsv("funcionarios.csv", funcionarios, [
                   {key: "nome", label: "Nome"}, {key: "cargo", label: "Cargo"}, {key: "condominio", label: "Condomínio"},
                   {key: "status", label: "Status"}, {key: "cpf", label: "CPF"}, {key: "telefone", label: "Telefone"},
-                  {key: "data_admissao", label: "Admissão"},
+                  {key: "data_admissao", label: "Admissão"}, {key: "data_desligamento", label: "Demissão"},
+                  {key: "motivo_desligamento", label: "Motivo do desligamento"},
                 ])}>Exportar funcionários</button>
                 <button onClick={() => downloadCsv("documentos.csv", documentos, [
                   {key: "tipo_documento", label: "Tipo"}, {key: "ano", label: "Ano"},
@@ -1042,6 +1537,11 @@ export default function Home() {
                   {key: "tipo", label: "Tipo"}, {key: "categoria", label: "Categoria"}, {key: "valor", label: "Valor"},
                   {key: "vencimento", label: "Vencimento"}, {key: "status_calculado", label: "Status"},
                 ])}>Exportar financeiro</button>
+                <button onClick={() => downloadCsv("horas-trabalhadas.csv", relatorios.horas_por_funcionario || [], [
+                  {key: "funcionario", label: "Funcionário"}, {key: "cargo", label: "Cargo"}, {key: "condominio", label: "Condomínio"},
+                  {key: "dias_trabalhados", label: "Dias trabalhados"}, {key: "horas_trabalhadas", label: "Horas trabalhadas"},
+                  {key: "horas_extras", label: "Horas extras"},
+                ])}>Exportar horas</button>
               </div>
             </section>
           </>
@@ -1054,7 +1554,12 @@ export default function Home() {
             postos={postos}
             escalaGrid={escalaGrid}
             lancamentos={lancamentos}
+            ocorrencias={ocorrencias}
+            onNovaOcorrencia={(condominioId) => setOcorrenciaModal({condominioId})}
           />
+        )}
+        {tab === "minha-escala" && isColaborador && (
+          <MinhaEscala me={me} escalaGrid={escalaGrid} />
         )}
         {tab === "usuarios" && me?.papel === "admin" && (
           <section className="panel">
@@ -1073,6 +1578,25 @@ export default function Home() {
                     <button className="link-btn" onClick={() => setUsuarioModal({mode: "edit", usuario: u})}>Editar</button>
                     <button className="link-btn" onClick={() => toggleUsuarioAtivo(u)}>{u.ativo ? "Desativar" : "Reativar"}</button>
                   </td>
+                </tr>)}
+              </tbody></table></div>
+            )}
+          </section>
+        )}
+        {tab === "auditoria" && me?.papel === "admin" && (
+          <section className="panel">
+            <div className="panel-head">
+              <div><h3>Auditoria</h3><span>{auditoria.length} registros mais recentes</span></div>
+            </div>
+            <p className="muted" style={{margin: "0 0 14px"}}>Quem criou, editou, desligou ou pagou cada registro do sistema.</p>
+            {!auditoria.length ? <div className="empty">Nenhum registro de auditoria ainda.</div> : (
+              <div className="table-wrap"><table><thead><tr><th>Quando</th><th>Usuário</th><th>Ação</th><th>Entidade</th><th>Detalhes</th></tr></thead><tbody>
+                {auditoria.map(a => <tr key={a.id}>
+                  <td>{new Date(a.created_at).toLocaleString("pt-BR")}</td>
+                  <td>{a.usuario_nome || "desconhecido"}</td>
+                  <td><span className="badge">{(a.acao || "").replace(/_/g, " ")}</span></td>
+                  <td>{(a.entidade || "").replace(/_/g, " ")}</td>
+                  <td>{a.detalhes ? JSON.stringify(a.detalhes) : "—"}</td>
                 </tr>)}
               </tbody></table></div>
             )}
@@ -1110,11 +1634,23 @@ export default function Home() {
         />
       )}
 
+      {ocorrenciaModal && (
+        <OcorrenciaModal
+          onCancel={() => setOcorrenciaModal(null)}
+          onSave={(titulo, descricao) => saveOcorrencia(ocorrenciaModal.condominioId, titulo, descricao)}
+        />
+      )}
+
+      {previewUrl && (
+        <DocumentPreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      )}
+
       {usuarioModal && (
         <UsuarioModal
           mode={usuarioModal.mode}
           usuario={usuarioModal.usuario}
           condominios={condominios}
+          funcionarios={funcionarios}
           onCancel={() => setUsuarioModal(null)}
           onSave={saveUsuario}
         />
@@ -1161,6 +1697,16 @@ export default function Home() {
         />
       )}
 
+      {afastamentoModal && (
+        <AfastamentoModal
+          mode={afastamentoModal.mode}
+          afastamento={afastamentoModal.afastamento}
+          funcionarios={funcionarios}
+          onCancel={() => setAfastamentoModal(null)}
+          onSave={saveAfastamento}
+        />
+      )}
+
       {escalaCell && (
         <EscalaCellModal
           cell={escalaCell}
@@ -1187,7 +1733,7 @@ export default function Home() {
   );
 }
 
-function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void}) {
+function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (url: string) => void}) {
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
@@ -1214,7 +1760,7 @@ function DataTable({rows, type, onEdit, onToggleStatus}: {rows: any[]; type: str
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td>{row.arquivo_drive_url ? <a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={"badge " + (row.status_validade === "vencido" ? "danger" : row.status_validade === "vencendo" ? "warn" : "")}>{STATUS_VALIDADE_LABEL[row.status_validade] || "Registrado"}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row.arquivo_drive_url)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
@@ -1326,6 +1872,60 @@ function DismissModal({employee, onCancel, onConfirm}: {employee: any; onCancel:
   );
 }
 
+function OcorrenciaModal({onCancel, onSave}: {onCancel: () => void; onSave: (titulo: string, descricao: string) => Promise<void>}) {
+  const [titulo, setTitulo] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(titulo, descricao);
+    } catch (e: any) {
+      setError(e.message || "Erro ao registrar ocorrência.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card modal-small" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>Nova ocorrência</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <label>Título<input value={titulo} onChange={e => setTitulo(e.target.value)} required placeholder="Ex.: Vazamento na garagem" /></label>
+        <label>Descrição<textarea value={descricao} onChange={e => setDescricao(e.target.value)} rows={4} placeholder="Detalhes da ocorrência" /></label>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Enviando..." : "Registrar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function DocumentPreviewModal({url, onClose}: {url: string; onClose: () => void}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card preview-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>Visualizar documento</h3>
+          <div className="row-actions">
+            <a className="link-btn" href={url.replace(/\/preview(\?.*)?$/, "/view")} target="_blank" rel="noopener noreferrer">Abrir no Drive ↗</a>
+            <button type="button" className="link-btn" onClick={onClose}>Fechar</button>
+          </div>
+        </div>
+        <iframe src={url} className="preview-frame" allow="autoplay" title="Preview do documento" />
+      </div>
+    </div>
+  );
+}
+
 function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" | "edit"; condominio: any; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
   const [form, setForm] = useState<Record<string, any>>(() => {
     const initial: Record<string, any> = {};
@@ -1381,12 +1981,13 @@ function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" |
   );
 }
 
-function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "create" | "edit"; usuario: any; condominios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+function UsuarioModal({mode, usuario, condominios, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; usuario: any; condominios: any[]; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
   const [nome, setNome] = useState(usuario?.nome || "");
   const [login, setLogin] = useState(usuario?.login || "");
   const [senha, setSenha] = useState("");
   const [papel, setPapel] = useState(usuario?.papel || "operacional");
   const [condominioId, setCondominioId] = useState(usuario?.condominio_id || "");
+  const [funcionarioId, setFuncionarioId] = useState(usuario?.funcionario_id || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -1395,7 +1996,7 @@ function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "cr
     setSaving(true);
     setError("");
     try {
-      await onSave({nome, login, senha, papel, condominio_id: condominioId});
+      await onSave({nome, login, senha, papel, condominio_id: condominioId, funcionario_id: funcionarioId});
     } catch (e: any) {
       setError(e.message || "Erro ao salvar usuário.");
       setSaving(false);
@@ -1427,6 +2028,15 @@ function UsuarioModal({mode, usuario, condominios, onCancel, onSave}: {mode: "cr
             <select value={condominioId} onChange={e => setCondominioId(e.target.value)} required>
               <option value="">—</option>
               {condominios.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </label>
+        )}
+        {papel === "colaborador" && (
+          <label>
+            Funcionário
+            <select value={funcionarioId} onChange={e => setFuncionarioId(e.target.value)} required>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
             </select>
           </label>
         )}
@@ -1711,11 +2321,70 @@ function EpiModal({mode, epi, funcionarios, onCancel, onSave}: {mode: "create" |
   );
 }
 
-function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]}) {
+function AfastamentoModal({mode, afastamento, funcionarios, onCancel, onSave}: {mode: "create" | "edit"; afastamento: any; funcionarios: any[]; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
+  const [form, setForm] = useState({
+    funcionario_id: afastamento?.funcionario_id || "",
+    tipo: afastamento?.tipo || "Ferias",
+    data_inicio: afastamento?.data_inicio || localDateISO(),
+    data_fim: afastamento?.data_fim || localDateISO(),
+    observacao: afastamento?.observacao || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(form);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar afastamento.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-head">
+          <h3>{mode === "create" ? "Novo afastamento" : `Editar afastamento`}</h3>
+          <button type="button" className="link-btn" onClick={onCancel}>Fechar</button>
+        </div>
+        <div className="modal-grid">
+          <label>
+            Funcionário
+            <select value={form.funcionario_id} onChange={e => setForm(f => ({...f, funcionario_id: e.target.value}))} required disabled={mode === "edit"}>
+              <option value="">—</option>
+              {funcionarios.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+          </label>
+          <label>
+            Tipo
+            <select value={form.tipo} onChange={e => setForm(f => ({...f, tipo: e.target.value}))} required>
+              {TIPOS_AFASTAMENTO.map(t => <option key={t} value={t}>{TIPO_AFASTAMENTO_LABEL[t]}</option>)}
+            </select>
+          </label>
+          <label>Início<input type="date" value={form.data_inicio} onChange={e => setForm(f => ({...f, data_inicio: e.target.value}))} required /></label>
+          <label>Fim<input type="date" value={form.data_fim} onChange={e => setForm(f => ({...f, data_fim: e.target.value}))} required /></label>
+          <label className="span-2">Observação<textarea value={form.observacao} onChange={e => setForm(f => ({...f, observacao: e.target.value}))} rows={2} /></label>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="link-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos, ocorrencias, onNovaOcorrencia}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]; ocorrencias: any[]; onNovaOcorrencia: (condominioId: string) => void}) {
   const condominio = condominios.find((c: any) => c.id === me?.condominio_id);
   const meusContratos = contratos.filter((c: any) => c.condominio_id === me?.condominio_id);
   const meusPostos = postos.filter((p: any) => p.condominio_id === me?.condominio_id);
   const meuFinanceiro = lancamentos.filter((l: any) => l.condominio_id === me?.condominio_id);
+  const minhasOcorrencias = ocorrencias.filter((o: any) => o.condominio_id === me?.condominio_id);
   const hojeISO = localDateISO();
   const escalaPorPosto = (postoId: string) => {
     const item = escalaGrid.items.find((e: any) => e.posto?.id === postoId);
@@ -1777,6 +2446,68 @@ function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamen
             ))}
           </tbody></table></div>
         )}
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <div><h3>Ocorrências</h3><span>{minhasOcorrencias.length} registrada(s)</span></div>
+          <button className="primary" onClick={() => onNovaOcorrencia(condominio.id)}>Nova ocorrência</button>
+        </div>
+        {!minhasOcorrencias.length ? <div className="empty">Nenhuma ocorrência registrada ainda.</div> : (
+          <div className="results">
+            {minhasOcorrencias.map((o: any) => (
+              <article key={o.id} className={"result " + (o.status === "resolvida" ? "" : o.status === "em_andamento" ? "duplicado" : "erro")}>
+                <div><b>{o.titulo}</b><span>{STATUS_OCORRENCIA_LABEL[o.status] || o.status}</span></div>
+                <p>{o.descricao || "Sem descrição"}</p>
+                {o.resposta && <p><b>Resposta:</b> {o.resposta}</p>}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+function MinhaEscala({me, escalaGrid}: {me: any; escalaGrid: {datas: string[]; items: any[]}}) {
+  const meuFuncionarioId = me?.funcionario_id;
+
+  if (!meuFuncionarioId) {
+    return <section className="panel"><div className="empty">Nenhum funcionário vinculado a este usuário ainda. Peça para um administrador configurar.</div></section>;
+  }
+
+  const minhaSemana = escalaGrid.datas.map(dia => {
+    for (const item of escalaGrid.items) {
+      const escala = item.escalas_por_dia?.[dia];
+      if (!escala) continue;
+      if (escala.funcionario_id === meuFuncionarioId) return {dia, posto: item.posto, escala, substituindo: false};
+      if (escala.substituto_id === meuFuncionarioId) return {dia, posto: item.posto, escala, substituindo: true};
+    }
+    return {dia, posto: null, escala: null, substituindo: false};
+  });
+
+  return (
+    <>
+      <section className="hero">
+        <div>
+          <p className="eyebrow">MINHA ESCALA</p>
+          <h2>Sua semana de trabalho</h2>
+          <p>{escalaGrid.datas.length ? `De ${formatDiaCurto(escalaGrid.datas[0])} a ${formatDiaCurto(escalaGrid.datas[escalaGrid.datas.length - 1])}` : "Semana atual"}</p>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head"><h3>Escala da semana</h3></div>
+        <div className="table-wrap"><table><thead><tr><th>Dia</th><th>Posto</th><th>Condomínio</th><th>Status</th></tr></thead><tbody>
+          {minhaSemana.map(row => (
+            <tr key={row.dia}>
+              <td>{formatDiaCurto(row.dia)}</td>
+              <td>{row.posto?.nome || "—"}{row.substituindo ? " (substituição)" : ""}</td>
+              <td>{row.posto?.condominios?.nome || "—"}</td>
+              <td>{row.escala
+                ? <span className={"badge " + (row.escala.status === "falta" ? "danger" : "")}>{ESCALA_STATUS_LABEL[row.escala.status] || row.escala.status}</span>
+                : <span className="badge warn">Folga</span>}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
       </section>
     </>
   );

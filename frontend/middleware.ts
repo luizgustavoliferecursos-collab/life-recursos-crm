@@ -8,16 +8,27 @@ export async function middleware(request: NextRequest) {
   }
 
   const secret = process.env.AUTH_SECRET;
-  if (!secret) {
+  const cookie = secret ? request.cookies.get("life_auth")?.value : undefined;
+  const session = secret ? await verifySession(cookie, secret) : null;
+
+  if (!session) {
+    // Uma rota de API (ex.: /api/proxy/*) precisa de um 401 em JSON, nao de um
+    // redirect: o fetch do cliente seguiria o redirect ate a pagina HTML de
+    // login e trataria isso como sucesso (response.ok=true, corpo vazio).
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({error: "Nao autenticado."}, {status: 401});
+    }
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  const cookie = request.cookies.get("life_auth")?.value;
-  const session = await verifySession(cookie, secret);
-  if (!session) {
-    return NextResponse.redirect(new URL("/login", request.url));
-  }
-  return NextResponse.next();
+  // Repassa a identidade ja verificada pro proxy do backend (frontend/app/api/proxy),
+  // que injeta isso como headers pro Python conseguir atribuir a auditoria a um
+  // usuario real, sem precisar reverificar o cookie assinado em outro lugar.
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-user-id", session.sub);
+  requestHeaders.set("x-user-nome", encodeURIComponent(session.nome));
+  requestHeaders.set("x-user-papel", session.papel);
+  return NextResponse.next({request: {headers: requestHeaders}});
 }
 
 export const config = {

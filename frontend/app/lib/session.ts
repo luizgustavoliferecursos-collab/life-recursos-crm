@@ -7,6 +7,7 @@ export type SessionPayload = {
   nome: string;
   papel: string;
   condominio_id: string | null;
+  funcionario_id: string | null;
   exp: number; // unix seconds
 };
 
@@ -60,4 +61,16 @@ export async function verifySession(cookieValue: string | undefined, secret: str
   } catch {
     return null;
   }
+}
+
+// Token curto (5min), so pra provar pro backend que quem esta chamando
+// /api/documentos/processar direto (sem passar pelo proxy same-origin, que
+// tem limite de 4.5MB de corpo na Vercel - pequeno demais pra PDF escaneado)
+// tem sessao valida. Formato simples (nao JSON) porque o payload e so 2 campos.
+export async function signUploadToken(userId: string, secret: string): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + 5 * 60;
+  const base = `${userId}.${exp}`;
+  const key = await hmacKey(secret);
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(base));
+  return `${base}.${toHex(signature)}`;
 }
