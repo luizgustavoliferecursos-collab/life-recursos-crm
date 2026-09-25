@@ -78,29 +78,30 @@ function useCrmValue() {
 
   async function refresh() {
     setError("");
-    try {
-      const [d, f, docs, condos, h, ds, c, p] = await Promise.all([
-        api("/api/dashboard"),
-        api("/api/funcionarios"),
-        api("/api/documentos?limit=200"),
-        api("/api/condominios"),
-        api("/health"),
-        api("/api/drive/status"),
-        api("/api/contratos"),
-        api("/api/postos-trabalho"),
-      ]);
-      setDashboard(d);
-      setFuncionarios(f.items || []);
-      setDocumentos(docs.items || []);
-      setCondominios(condos.items || []);
-      setHealth(h);
-      setDrive(ds);
-      setContratos(c.items || []);
-      setPostos(p.items || []);
-      await Promise.all([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadOcorrencias(), loadAlertas(), loadRelatorios()]);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar dados.");
+    // allSettled: se uma rota falhar (ex.: backend acordando no Render), as
+    // outras continuam aparecendo em vez da tela inteira ficar zerada.
+    const calls: [string, (r: any) => void][] = [
+      ["/api/dashboard", setDashboard],
+      ["/api/funcionarios", r => setFuncionarios(r.items || [])],
+      ["/api/documentos?limit=200", r => setDocumentos(r.items || [])],
+      ["/api/condominios", r => setCondominios(r.items || [])],
+      ["/health", setHealth],
+      ["/api/drive/status", setDrive],
+      ["/api/contratos", r => setContratos(r.items || [])],
+      ["/api/postos-trabalho", r => setPostos(r.items || [])],
+    ];
+    const results = await Promise.allSettled(calls.map(([path]) => api(path)));
+    const falhas: string[] = [];
+    results.forEach((res, i) => {
+      if (res.status === "fulfilled") calls[i][1](res.value);
+      else falhas.push(calls[i][0]);
+    });
+    if (falhas.length === calls.length) {
+      setError("Não foi possível conectar ao servidor. Ele pode estar iniciando, tente novamente em alguns segundos.");
+    } else if (falhas.length) {
+      setError("Parte dos dados não carregou. Recarregue a página em alguns segundos.");
     }
+    await Promise.allSettled([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadOcorrencias(), loadAlertas(), loadRelatorios()]);
   }
 
   async function loadFinanceiro() {

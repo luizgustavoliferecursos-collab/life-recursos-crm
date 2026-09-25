@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { CONDOMINIO_FORM_FIELDS, CARGOS, TURNOS } from "../../lib/ui";
+import { CONDOMINIO_FORM_FIELDS, CARGOS, TURNOS, cargoLabel } from "../../lib/ui";
 
 export function CondominioModal({mode, condominio, onCancel, onSave}: {mode: "create" | "edit"; condominio: any; onCancel: () => void; onSave: (data: Record<string, any>) => Promise<void>}) {
   const [form, setForm] = useState<Record<string, any>>(() => {
@@ -203,7 +203,7 @@ export function PostoModal({mode, posto, condominios, onCancel, onSave}: {mode: 
             Cargo
             <select value={form.cargo} onChange={e => setForm(f => ({...f, cargo: e.target.value}))} required>
               <option value="">—</option>
-              {CARGOS.filter(c => c !== "Pendente").map(c => <option key={c} value={c}>{c}</option>)}
+              {CARGOS.filter(c => c !== "Pendente").map(c => <option key={c} value={c}>{cargoLabel(c)}</option>)}
             </select>
           </label>
           <label>

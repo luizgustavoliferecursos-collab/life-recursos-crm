@@ -66,6 +66,25 @@ export const API = "/api/proxy";
 export const DIRECT_API = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 export const CARGOS = ["ASG", "Diarista", "Guardiao", "Portaria", "Seguranca", "Staff", "Pendente"];
+const TIPO_DOC_LABEL: Record<string, string> = {
+  ASO: "ASO",
+  Contrato: "Contrato",
+  CertificadoEPI: "Termo de EPI",
+  CertificadoQualificacao: "Certificado de qualificação",
+  FolhaDePonto: "Folha de ponto",
+  Documento: "Documento",
+};
+// Tipo salvo pela IA em CamelCase ("CertificadoQualificacao") vira texto legivel.
+export function tipoDocLabel(tipo: string | null | undefined, fallback = "Documento"): string {
+  if (!tipo) return fallback;
+  return TIPO_DOC_LABEL[tipo] || tipo.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+// Valor salvo no banco fica sem acento (compatibilidade); na tela sempre com acento.
+export const CARGO_LABEL: Record<string, string> = {Guardiao: "Guardião", Seguranca: "Segurança"};
+export function cargoLabel(cargo: string | null | undefined): string {
+  if (!cargo) return "Pendente";
+  return CARGO_LABEL[cargo] || cargo;
+}
 export const TIPOS_CONTRATO = ["CLT", "Terceirizado", "Autonomo"];
 export const PAPEIS = ["admin", "rh", "financeiro", "operacional", "sindico", "colaborador"];
 export const PAPEL_LABEL: Record<string, string> = {

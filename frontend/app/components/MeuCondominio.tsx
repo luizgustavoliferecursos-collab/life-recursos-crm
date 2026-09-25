@@ -1,6 +1,6 @@
 "use client";
 
-import { localDateISO, formatMoney, formatDate, LANCAMENTO_STATUS_LABEL, STATUS_OCORRENCIA_LABEL } from "../lib/ui";
+import { localDateISO, formatMoney, formatDate, LANCAMENTO_STATUS_LABEL, STATUS_OCORRENCIA_LABEL, cargoLabel } from "../lib/ui";
 
 export function MeuCondominio({me, condominios, contratos, postos, escalaGrid, lancamentos, ocorrencias, onNovaOcorrencia}: {me: any; condominios: any[]; contratos: any[]; postos: any[]; escalaGrid: {datas: string[]; items: any[]}; lancamentos: any[]; ocorrencias: any[]; onNovaOcorrencia: (condominioId: string) => void}) {
   const condominio = condominios.find((c: any) => c.id === me?.condominio_id);
@@ -47,7 +47,7 @@ export function MeuCondominio({me, condominios, contratos, postos, escalaGrid, l
             <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Cargo</th><th>Turno</th><th>Hoje</th></tr></thead><tbody>
               {meusPostos.map((p: any) => (
                 <tr key={p.id}>
-                  <td>{p.nome}</td><td>{p.cargo}</td><td>{p.turno || "—"}</td>
+                  <td>{p.nome}</td><td>{cargoLabel(p.cargo)}</td><td>{p.turno || "—"}</td>
                   <td>{escalaPorPosto(p.id)?.funcionario?.nome || "Vago"}</td>
                 </tr>
               ))}

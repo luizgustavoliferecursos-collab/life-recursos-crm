@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useCrm } from "../../../lib/CrmContext";
-import { formatDate, formatCompetencia, formatMoney, LANCAMENTO_STATUS_LABEL, STATUS_OCORRENCIA_LABEL } from "../../../lib/ui";
+import { formatDate, formatCompetencia, formatMoney, LANCAMENTO_STATUS_LABEL, STATUS_OCORRENCIA_LABEL, cargoLabel } from "../../../lib/ui";
 import { Breadcrumb } from "../../../components/Breadcrumb";
 import { DataTable } from "../../../components/DataTable";
 import { EmptyState } from "../../../components/EmptyState";
@@ -95,7 +95,7 @@ export default function CondominioDetalhePage() {
               <div className="table-wrap"><table><thead><tr><th>Posto</th><th>Cargo</th><th>Turno</th><th>Status</th><th>Ações</th></tr></thead><tbody>
                 {meusPostos.map((p: any) => (
                   <tr key={p.id}>
-                    <td>{p.nome}</td><td>{p.cargo}</td><td>{p.turno || "—"}</td>
+                    <td>{p.nome}</td><td>{cargoLabel(p.cargo)}</td><td>{p.turno || "—"}</td>
                     <td><span className={"badge " + (p.status === "inativo" ? "warn" : "")}>{p.status === "inativo" ? "Inativo" : "Ativo"}</span></td>
                     <td className="row-actions"><button className="link-btn" onClick={() => setPostoModal({mode: "edit", posto: p})}>Editar</button></td>
                   </tr>

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useCrm } from "../../../lib/CrmContext";
-import { api, formatCompetencia, formatDate, formatMoney, statusValidadeClass, statusValidadeLabel } from "../../../lib/ui";
+import { api, formatCompetencia, formatDate, formatMoney, statusValidadeClass, statusValidadeLabel, cargoLabel, tipoDocLabel } from "../../../lib/ui";
 import { Breadcrumb } from "../../../components/Breadcrumb";
 import { EmptyState } from "../../../components/EmptyState";
 
@@ -72,7 +72,7 @@ export default function FichaFuncionarioPage() {
       eventos.push({data: a.created_at, texto: `${(a.acao || "").replace(/_/g, " ")} por ${a.usuario_nome || "desconhecido"}`});
     }
     for (const d of ficha?.documentos || []) {
-      eventos.push({data: d.created_at, texto: `Documento "${d.tipo_documento || d.arquivo_nome}" registrado`});
+      eventos.push({data: d.created_at, texto: `Documento "${tipoDocLabel(d.tipo_documento, d.arquivo_nome)}" registrado`});
     }
     for (const o of ficha?.ocorrencias || []) {
       eventos.push({data: o.created_at, texto: `Ocorrência: ${o.titulo}`});
@@ -96,7 +96,7 @@ export default function FichaFuncionarioPage() {
         <div className="ficha-header-info">
           <h2>{f.nome}</h2>
           <div className="row-actions">
-            <span className={"badge " + (f.cargo === "Pendente" ? "warn" : "")}>{f.cargo || "Pendente"}</span>
+            <span className={"badge " + (f.cargo === "Pendente" ? "warn" : "")}>{cargoLabel(f.cargo)}</span>
             <span className="muted">{f.condominio || "Sem condomínio"}</span>
             <span className={"badge " + (f.status === "inativo" ? "warn" : "")}>{f.status === "inativo" ? "Desligado" : "Ativo"}</span>
             {documentacaoTotal > 0 && (
@@ -121,7 +121,7 @@ export default function FichaFuncionarioPage() {
               <div className="results">
                 {checklistPendente.map((c: any) => (
                   <article key={c.tipo_documento} className={"result " + (c.situacao === "falta" ? "erro" : "duplicado")}>
-                    <div><b>{c.tipo_documento}</b><span>{SITUACAO_LABEL[c.situacao]}</span></div>
+                    <div><b>{tipoDocLabel(c.tipo_documento)}</b><span>{SITUACAO_LABEL[c.situacao]}</span></div>
                   </article>
                 ))}
               </div>
@@ -132,7 +132,7 @@ export default function FichaFuncionarioPage() {
             {!proximosVencimentos.length ? <EmptyState icon="check-circle" title="Nenhum vencimento próximo" /> : (
               <div className="table-wrap"><table><thead><tr><th>Documento</th><th>Validade</th><th>Status</th></tr></thead><tbody>
                 {proximosVencimentos.map((d: any) => (
-                  <tr key={d.id}><td>{d.tipo_documento}</td><td>{formatDate(d.data_validade)}</td><td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td></tr>
+                  <tr key={d.id}><td>{tipoDocLabel(d.tipo_documento)}</td><td>{formatDate(d.data_validade)}</td><td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td></tr>
                 ))}
               </tbody></table></div>
             )}
@@ -170,7 +170,7 @@ export default function FichaFuncionarioPage() {
           <div className="panel-head"><h3>Contrato</h3></div>
           <div className="modal-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
             <div><label className="muted">Data de admissão</label><p>{formatDate(f.data_admissao)}</p></div>
-            <div><label className="muted">Cargo</label><p>{f.cargo || "Pendente"}</p></div>
+            <div><label className="muted">Cargo</label><p>{cargoLabel(f.cargo)}</p></div>
             <div><label className="muted">Tipo de contrato</label><p>{f.tipo_contrato || "—"}</p></div>
             {canEditSensitive && <div><label className="muted">Salário base</label><p>{f.salario_base ? formatMoney(f.salario_base) : "—"}</p></div>}
             {f.status === "inativo" && <div><label className="muted">Desligamento</label><p>{formatDate(f.data_desligamento)}{f.motivo_desligamento ? ` · ${f.motivo_desligamento}` : ""}</p></div>}
@@ -181,7 +181,7 @@ export default function FichaFuncionarioPage() {
       {subtab === "documentos" && (
         <section className="panel">
           <div className="panel-head">
-            <div><h3>Checklist de documentos</h3><span>Cargo: {f.cargo || "Pendente"}</span></div>
+            <div><h3>Checklist de documentos</h3><span>Cargo: {cargoLabel(f.cargo)}</span></div>
             <a className="primary" href="/documentos/enviar">Enviar documento</a>
           </div>
           {!ficha.checklist?.length ? (
@@ -190,7 +190,7 @@ export default function FichaFuncionarioPage() {
             <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Situação</th><th>Validade</th></tr></thead><tbody>
               {ficha.checklist.map((c: any) => (
                 <tr key={c.tipo_documento}>
-                  <td>{c.tipo_documento}</td>
+                  <td>{tipoDocLabel(c.tipo_documento)}</td>
                   <td><span className={"badge " + SITUACAO_CLASS[c.situacao]}>{SITUACAO_LABEL[c.situacao]}</span></td>
                   <td>{c.documento ? formatDate(c.documento.data_validade) : "—"}{c.documento?.competencia ? ` · ${formatCompetencia(c.documento.competencia)}` : ""}</td>
                 </tr>
@@ -202,7 +202,7 @@ export default function FichaFuncionarioPage() {
             <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Ano</th><th>Status</th><th>Arquivo</th></tr></thead><tbody>
               {ficha.documentos.map((d: any) => (
                 <tr key={d.id}>
-                  <td>{d.tipo_documento || d.arquivo_nome}</td>
+                  <td>{tipoDocLabel(d.tipo_documento, d.arquivo_nome)}</td>
                   <td>{d.ano || "—"}</td>
                   <td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td>
                   <td>{d.arquivo_drive_url ? <a className="link-btn" href={d.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td>
