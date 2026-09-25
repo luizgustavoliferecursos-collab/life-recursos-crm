@@ -973,6 +973,17 @@ class AfastamentoUpdate(BaseModel):
             raise ValueError("Data de fim nao pode ser anterior a data de inicio.")
         return self
 
+class DocumentoUpdate(BaseModel):
+    # Preenchimento manual por enquanto (a IA nao extrai competencia).
+    competencia: date | None = None
+
+    @field_validator("competencia")
+    @classmethod
+    def valida_competencia(cls, value: date | None) -> date | None:
+        if value is not None and value.day != 1:
+            return value.replace(day=1)
+        return value
+
 def document_already_registered(
     db,
     doc_type: str,
@@ -1360,6 +1371,24 @@ def documents(limit: int = 100):
         return {"items": with_live_status(result.data or [])}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Erro ao consultar documentos: {exc}")
+
+@app.put("/api/documentos/{documento_id}")
+def update_documento(documento_id: str, payload: DocumentoUpdate):
+    db = get_supabase()
+    data = payload.model_dump(exclude_unset=True, mode="json")
+    if not data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    try:
+        existing = db.table("documentos").select("id").eq("id", documento_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Documento nao encontrado.")
+        result = db.table("documentos").update(data).eq("id", documento_id).execute()
+        log_auditoria(db, "atualizar", "documento", documento_id, {"campos": list(data.keys())})
+        return with_live_status(result.data)[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Erro ao atualizar documento: {exc}")
 
 @app.get("/api/condominios")
 def condominiums():

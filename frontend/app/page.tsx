@@ -108,6 +108,14 @@ function formatDate(value: any): string {
   return `${d}/${m}/${y}`;
 }
 
+// competencia guarda sempre o dia 1 do mes (aaaa-mm-01); exibicao como "Set/2026".
+function formatCompetencia(value: any): string {
+  if (!value) return "";
+  const [y, m] = String(value).slice(0, 7).split("-");
+  const mes = MES_CURTO[Number(m) - 1];
+  return mes ? `${mes}/${y}` : "";
+}
+
 const MES_CURTO = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
 const CHART_PALETTE = ["#2563eb", "#38bdf8", "#16a34a", "#f59e0b", "#a855f7", "#94a3b8"];
 const CHART_TOOLTIP_STYLE = {
@@ -305,7 +313,7 @@ export default function Home() {
   const [employeeModal, setEmployeeModal] = useState<{mode: "create" | "edit"; employee: any} | null>(null);
   const [dismissModal, setDismissModal] = useState<any | null>(null);
   const [condominioModal, setCondominioModal] = useState<{mode: "create" | "edit"; condominio: any} | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<any | null>(null);
   const [me, setMe] = useState<{nome: string; papel: string; condominio_id: string | null; funcionario_id: string | null} | null>(null);
   const [usuarios, setUsuarios] = useState<any[]>([]);
   const [auditoria, setAuditoria] = useState<any[]>([]);
@@ -1000,8 +1008,19 @@ export default function Home() {
     window.location.href = "/login";
   }
 
-  function openPreview(url: string) {
-    setPreviewUrl(drivePreviewUrl(url));
+  function openPreview(row: any) {
+    setPreviewDoc(row);
+  }
+
+  async function saveCompetencia(documentoId: string, competencia: string) {
+    await api(`/api/documentos/${documentoId}`, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({competencia: competencia || null}),
+    });
+    setPreviewDoc((d: any) => d && d.id === documentoId ? {...d, competencia: competencia || null} : d);
+    pushToast("Competência salva.");
+    await refresh();
   }
 
   const isSindico = me?.papel === "sindico";
@@ -1662,8 +1681,8 @@ export default function Home() {
         />
       )}
 
-      {previewUrl && (
-        <DocumentPreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      {previewDoc && (
+        <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} onSaveCompetencia={saveCompetencia} />
       )}
 
       {usuarioModal && (
@@ -1754,7 +1773,7 @@ export default function Home() {
   );
 }
 
-function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (url: string) => void}) {
+function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]; type: string; onEdit?: (row: any) => void; onToggleStatus?: (row: any) => void; onPreview?: (row: any) => void}) {
   if (!rows.length) return <div className="empty">Nenhum registro encontrado.</div>;
   return <div className="table-wrap"><table><thead><tr>{
     type === "employees" ? <><th>Nome</th><th>Cargo</th><th>Condomínio</th><th>Status</th>{onEdit && <th>Ações</th>}</> :
@@ -1781,7 +1800,7 @@ function DataTable({rows, type, onEdit, onToggleStatus, onPreview}: {rows: any[]
         <button className="link-btn" onClick={() => onToggleStatus?.(row)}>{row.status === "inativo" ? "Reativar" : "Inativar"}</button>
       </td>}
     </> :
-    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={statusValidadeClass(row.status_validade)}>{statusValidadeLabel(row.status_validade)}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row.arquivo_drive_url)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
+    <><td>{row.tipo_documento || row.arquivo_nome || "Documento"}{row.versao_anterior_id && <span className="badge" style={{marginLeft: 6}} title="Existe uma versão anterior deste documento (renovação)">Renovado</span>}</td><td>{row.funcionarios?.nome || (row.condominios?.nome ? `${row.condominios.nome} (condomínio)` : "—")}</td><td>{row.ano || "—"}</td><td><span className={statusValidadeClass(row.status_validade)}>{statusValidadeLabel(row.status_validade)}</span></td><td className="row-actions">{row.arquivo_drive_url ? <>{onPreview && <button type="button" className="link-btn" onClick={() => onPreview(row)}>Visualizar</button>}<a className="link-btn" href={row.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a></> : "—"}</td></>
   }</tr>)}</tbody></table></div>;
 }
 
@@ -1930,18 +1949,40 @@ function OcorrenciaModal({onCancel, onSave}: {onCancel: () => void; onSave: (tit
   );
 }
 
-function DocumentPreviewModal({url, onClose}: {url: string; onClose: () => void}) {
+function DocumentPreviewModal({doc, onClose, onSaveCompetencia}: {doc: any; onClose: () => void; onSaveCompetencia: (id: string, competencia: string) => Promise<void>}) {
+  const [competencia, setCompetencia] = useState(doc.competencia ? String(doc.competencia).slice(0, 7) : "");
+  const [saving, setSaving] = useState(false);
+  const url = doc.arquivo_drive_url ? drivePreviewUrl(doc.arquivo_drive_url) : "";
+
+  async function salvarCompetencia() {
+    setSaving(true);
+    try {
+      await onSaveCompetencia(doc.id, competencia ? `${competencia}-01` : "");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card preview-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>Visualizar documento</h3>
           <div className="row-actions">
-            <a className="link-btn" href={url.replace(/\/preview(\?.*)?$/, "/view")} target="_blank" rel="noopener noreferrer">Abrir no Drive ↗</a>
+            {doc.arquivo_drive_url && <a className="link-btn" href={doc.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir no Drive ↗</a>}
             <button type="button" className="link-btn" onClick={onClose}>Fechar</button>
           </div>
         </div>
-        <iframe src={url} className="preview-frame" allow="autoplay" title="Preview do documento" />
+        {doc.tipo_documento === "FolhaDePonto" && (
+          <div className="row-actions" style={{alignItems: "flex-end"}}>
+            <label style={{display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--muted)"}}>
+              Competência{competencia && <span className="muted" style={{fontWeight: 500}}> · {formatCompetencia(`${competencia}-01`)}</span>}
+              <input type="month" value={competencia} onChange={e => setCompetencia(e.target.value)} />
+            </label>
+            <button className="primary" disabled={saving} onClick={salvarCompetencia}>{saving ? "Salvando..." : "Salvar competência"}</button>
+          </div>
+        )}
+        {url ? <iframe src={url} className="preview-frame" allow="autoplay" title="Preview do documento" /> : <div className="empty">Sem arquivo para visualizar.</div>}
       </div>
     </div>
   );
