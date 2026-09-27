@@ -20,7 +20,7 @@ export default function FuncionariosPage() {
       <div className="panel-head">
         <div><h3>Funcionários</h3><span>{filtrados.length} registros</span></div>
         <div className="row-actions">
-          <input placeholder="Buscar por nome, CPF, cargo ou condomínio" value={busca} onChange={e => setBusca(e.target.value)} style={{minWidth: 240}} />
+          <input className="local-search" placeholder="Buscar por nome, CPF, cargo ou condomínio" value={busca} onChange={e => setBusca(e.target.value)} />
           <button className="primary" onClick={() => setEmployeeModal({mode: "create", employee: {}})}>Novo funcionário</button>
         </div>
       </div>

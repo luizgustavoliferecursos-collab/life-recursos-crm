@@ -383,6 +383,10 @@ button.link-btn:hover:not(:disabled){background:transparent;border:0;color:var(-
 /* campos: altura e visual iguais aos botoes */
 select,input:not([type]),input[type=search],input[type=date],input[type=text],input[type=number],input[type=email]{height:36px;padding:0 12px;border-radius:8px;font-size:13px;box-shadow:var(--shadow-sm)}
 .panel-head input:not([type]){min-width:260px}
+@media(max-width:600px){
+  .panel-head input:not([type]),.local-search{min-width:0;width:100%}
+  .panel-head .row-actions{width:100%}
+}
 @media(max-width:760px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.kpi{padding:14px}.kpi-value{font-size:22px}.kpi-icon{display:none}}
 /* cartoes de resultado/pendencia mais discretos */
 .result{border-left-width:3px;padding:11px 14px;border-radius:8px;box-shadow:none}

@@ -23,7 +23,7 @@ export default function DocumentosPage() {
       <div className="panel-head">
         <h3>Documentos</h3>
         <div className="row-actions">
-          <input placeholder="Buscar por tipo, arquivo, funcionário ou condomínio" value={busca} onChange={e => setBusca(e.target.value)} style={{minWidth: 260}} />
+          <input className="local-search" placeholder="Buscar por tipo, arquivo, funcionário ou condomínio" value={busca} onChange={e => setBusca(e.target.value)} />
           <span className="muted">{filtrados.length} registros</span>
         </div>
       </div>

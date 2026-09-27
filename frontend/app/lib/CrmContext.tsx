@@ -76,79 +76,59 @@ function useCrmValue() {
     dialogResolver.current = null;
   }
 
+  // Helper generico: busca 1 recurso e guarda no estado. Devolve true/false
+  // (em vez de deixar o erro subir) pra "refresh" poder somar quantos
+  // recursos falharam sem travar os outros - e pra cada mutacao poder
+  // recarregar SO o que ela mudou, em vez de tudo de novo (era o principal
+  // motivo do app ficar lento depois de qualquer acao: 1 clique disparava
+  // as mesmas ~15 chamadas de "refresh" completo).
+  async function loadResource(path: string, setter: (data: any) => void, errMsg: string): Promise<boolean> {
+    try {
+      setter(await api(path));
+      return true;
+    } catch (e: any) {
+      setError(e.message || errMsg);
+      return false;
+    }
+  }
+
+  const loadDashboardData = () => loadResource("/api/dashboard", setDashboard, "Erro ao carregar dashboard.");
+  const loadFuncionarios = () => loadResource("/api/funcionarios", r => setFuncionarios(r.items || []), "Erro ao carregar funcionários.");
+  const loadDocumentos = () => loadResource("/api/documentos?limit=200", r => setDocumentos(r.items || []), "Erro ao carregar documentos.");
+  const loadCondominios = () => loadResource("/api/condominios", r => setCondominios(r.items || []), "Erro ao carregar condomínios.");
+  const loadContratos = () => loadResource("/api/contratos", r => setContratos(r.items || []), "Erro ao carregar contratos.");
+  const loadPostos = () => loadResource("/api/postos-trabalho", r => setPostos(r.items || []), "Erro ao carregar postos.");
+  const loadHealth = () => loadResource("/health", setHealth, "Erro ao verificar status do backend.");
+  const loadDrive = () => loadResource("/api/drive/status", setDrive, "Erro ao verificar status do Drive.");
+  // Carrega tudo de uma vez; status e tipo agora sao filtrados no cliente
+  // (useMemo abaixo), pra alimentar os KPIs/graficos com o universo
+  // completo e a tabela ficar instantanea ao trocar de filtro.
+  const loadFinanceiro = () => loadResource("/api/financeiro", r => setLancamentos(r.items || []), "Erro ao carregar financeiro.");
+  const loadEpis = () => loadResource("/api/epis", r => setEpis(r.items || []), "Erro ao carregar EPIs.");
+  const loadAfastamentos = () => loadResource("/api/afastamentos", r => setAfastamentos(r.items || []), "Erro ao carregar afastamentos.");
+  const loadOnboarding = () => loadResource("/api/onboarding", r => setOnboarding(r.items || []), "Erro ao carregar checklist de onboarding.");
+  const loadOcorrencias = () => loadResource("/api/ocorrencias", r => setOcorrencias(r.items || []), "Erro ao carregar ocorrências.");
+  const loadAlertas = () => loadResource("/api/notificacoes", setAlertas, "Erro ao carregar alertas.");
+  const loadRelatorios = () => loadResource("/api/relatorios", setRelatorios, "Erro ao carregar relatórios.");
+  const loadUsuarios = () => loadResource("/api/usuarios", r => setUsuarios(r.items || []), "Erro ao carregar usuários.");
+  const loadAuditoria = () => loadResource("/api/auditoria?limit=200", r => setAuditoria(r.items || []), "Erro ao carregar auditoria.");
+
   async function refresh() {
     setError("");
-    // allSettled: se uma rota falhar (ex.: backend acordando no Render), as
-    // outras continuam aparecendo em vez da tela inteira ficar zerada.
-    const calls: [string, (r: any) => void][] = [
-      ["/api/dashboard", setDashboard],
-      ["/api/funcionarios", r => setFuncionarios(r.items || [])],
-      ["/api/documentos?limit=200", r => setDocumentos(r.items || [])],
-      ["/api/condominios", r => setCondominios(r.items || [])],
-      ["/health", setHealth],
-      ["/api/drive/status", setDrive],
-      ["/api/contratos", r => setContratos(r.items || [])],
-      ["/api/postos-trabalho", r => setPostos(r.items || [])],
-    ];
-    const results = await Promise.allSettled(calls.map(([path]) => api(path)));
-    const falhas: string[] = [];
-    results.forEach((res, i) => {
-      if (res.status === "fulfilled") calls[i][1](res.value);
-      else falhas.push(calls[i][0]);
-    });
-    if (falhas.length === calls.length) {
+    // Todas as 14 chamadas de uma vez (antes eram 2 grupos, um esperando o
+    // outro terminar - cortava a carga inicial praticamente pela metade).
+    const results = await Promise.all([
+      loadDashboardData(), loadFuncionarios(), loadDocumentos(), loadCondominios(), loadHealth(), loadDrive(),
+      loadContratos(), loadPostos(), loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(),
+      loadOcorrencias(), loadAlertas(), loadRelatorios(),
+    ]);
+    const falhas = results.filter(ok => !ok).length;
+    if (falhas === results.length) {
       setError("Não foi possível conectar ao servidor. Ele pode estar iniciando, tente novamente em alguns segundos.");
-    } else if (falhas.length) {
+    } else if (falhas) {
       setError("Parte dos dados não carregou. Recarregue a página em alguns segundos.");
-    }
-    await Promise.allSettled([loadFinanceiro(), loadEpis(), loadAfastamentos(), loadOnboarding(), loadOcorrencias(), loadAlertas(), loadRelatorios()]);
-  }
-
-  async function loadFinanceiro() {
-    try {
-      // Carrega tudo de uma vez; status e tipo agora sao filtrados no cliente
-      // (useMemo abaixo), pra alimentar os KPIs/graficos com o universo
-      // completo e a tabela ficar instantanea ao trocar de filtro.
-      const r = await api("/api/financeiro");
-      setLancamentos(r.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar financeiro.");
-    }
-  }
-
-  async function loadEpis() {
-    try {
-      const r = await api("/api/epis");
-      setEpis(r.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar EPIs.");
-    }
-  }
-
-  async function loadAfastamentos() {
-    try {
-      const r = await api("/api/afastamentos");
-      setAfastamentos(r.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar afastamentos.");
-    }
-  }
-
-  async function loadOnboarding() {
-    try {
-      const r = await api("/api/onboarding");
-      setOnboarding(r.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar checklist de onboarding.");
-    }
-  }
-
-  async function loadOcorrencias() {
-    try {
-      const r = await api("/api/ocorrencias");
-      setOcorrencias(r.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar ocorrências.");
+    } else {
+      setError("");
     }
   }
 
@@ -179,42 +159,6 @@ function useCrmValue() {
       await loadOcorrencias();
     } catch (e: any) {
       pushToast(e.message || "Erro ao atualizar ocorrência.", "error");
-    }
-  }
-
-  async function loadAlertas() {
-    try {
-      const r = await api("/api/notificacoes");
-      setAlertas(r);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar alertas.");
-    }
-  }
-
-  async function loadRelatorios() {
-    try {
-      const r = await api("/api/relatorios");
-      setRelatorios(r);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar relatórios.");
-    }
-  }
-
-  async function loadUsuarios() {
-    try {
-      const u = await api("/api/usuarios");
-      setUsuarios(u.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar usuários.");
-    }
-  }
-
-  async function loadAuditoria() {
-    try {
-      const a = await api("/api/auditoria?limit=200");
-      setAuditoria(a.items || []);
-    } catch (e: any) {
-      setError(e.message || "Erro ao carregar auditoria.");
     }
   }
 
@@ -363,7 +307,10 @@ function useCrmValue() {
       if (!uploadResponse.ok) throw new Error(payload.detail || "Falha ao processar documentos.");
       setResults(payload.resultados || []);
       setProgress(100);
-      await refresh();
+      // So o que um upload pode de fato mudar: documentos novos, funcionario/
+      // condominio criados automaticamente pela IA, contadores do dashboard,
+      // checklist de onboarding e alertas de vencimento.
+      await Promise.all([loadDocumentos(), loadFuncionarios(), loadCondominios(), loadDashboardData(), loadOnboarding(), loadAlertas()]);
     } catch (e: any) {
       setError(e.message || "Erro ao processar.");
     } finally {
@@ -396,7 +343,7 @@ function useCrmValue() {
     }
     setEmployeeModal(null);
     pushToast(mode === "edit" ? "Funcionário atualizado." : "Funcionário cadastrado.");
-    await refresh();
+    await Promise.all([loadFuncionarios(), loadDashboardData(), loadOnboarding()]);
   }
 
   async function confirmCargo(id: string, cargo: string) {
@@ -406,7 +353,7 @@ function useCrmValue() {
       body: JSON.stringify({cargo}),
     });
     pushToast("Cargo confirmado.");
-    await refresh();
+    await Promise.all([loadFuncionarios(), loadDashboardData(), loadOnboarding()]);
   }
 
   async function submitDismiss(motivo: string) {
@@ -423,7 +370,7 @@ function useCrmValue() {
     }
     setDismissModal(null);
     pushToast(isInactive ? "Funcionário reativado." : "Funcionário desligado.");
-    await refresh();
+    await Promise.all([loadFuncionarios(), loadDashboardData()]);
   }
 
   async function saveCondominio(data: Record<string, any>) {
@@ -450,7 +397,7 @@ function useCrmValue() {
     }
     setCondominioModal(null);
     pushToast(mode === "edit" ? "Condomínio atualizado." : "Condomínio cadastrado.");
-    await refresh();
+    await Promise.all([loadCondominios(), loadDashboardData()]);
   }
 
   async function toggleCondominioStatus(row: any) {
@@ -465,7 +412,7 @@ function useCrmValue() {
         body: JSON.stringify({status: next}),
       });
       pushToast(`Condomínio ${action === "inativar" ? "inativado" : "reativado"}.`);
-      await refresh();
+      await Promise.all([loadCondominios(), loadDashboardData()]);
     } catch (e: any) {
       setError(e.message || "Erro ao atualizar condomínio.");
       pushToast("Erro ao atualizar condomínio.", "error");
@@ -535,7 +482,7 @@ function useCrmValue() {
     }
     setContratoModal(null);
     pushToast(mode === "edit" ? "Contrato atualizado." : "Contrato cadastrado.");
-    await refresh();
+    await Promise.all([loadContratos(), loadRelatorios()]);
   }
 
   async function savePosto(data: Record<string, any>) {
@@ -555,7 +502,7 @@ function useCrmValue() {
     }
     setPostoModal(null);
     pushToast(mode === "edit" ? "Posto atualizado." : "Posto cadastrado.");
-    await refresh();
+    await Promise.all([loadPostos(), loadEscalas(semanaInicio)]);
   }
 
   async function atribuirEscala(postoId: string, dia: string, funcionarioId: string) {
@@ -635,7 +582,7 @@ function useCrmValue() {
     }
     setLancamentoModal(null);
     pushToast(mode === "edit" ? "Lançamento atualizado." : "Lançamento criado.");
-    await refresh();
+    await Promise.all([loadFinanceiro(), loadDashboardData()]);
   }
 
   async function marcarPago(id: string) {
@@ -644,8 +591,7 @@ function useCrmValue() {
     try {
       await api(`/api/financeiro/${id}/pagar`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
       pushToast("Lançamento marcado como pago.");
-      await loadFinanceiro();
-      await refresh();
+      await Promise.all([loadFinanceiro(), loadDashboardData()]);
     } catch (e: any) {
       setError(e.message || "Erro ao marcar pagamento.");
       pushToast("Erro ao marcar pagamento.", "error");
@@ -663,8 +609,7 @@ function useCrmValue() {
         body: JSON.stringify({mes}),
       });
       pushToast(`${r.criados} cobrança(s) gerada(s) · ${r.ja_existentes} já existiam${r.ignorados_sem_valor ? ` · ${r.ignorados_sem_valor} sem valor mensal` : ""}.`);
-      await loadFinanceiro();
-      await refresh();
+      await Promise.all([loadFinanceiro(), loadDashboardData()]);
     } catch (e: any) {
       setError(e.message || "Erro ao gerar mensalidades.");
       pushToast("Erro ao gerar mensalidades.", "error");
@@ -709,7 +654,7 @@ function useCrmValue() {
     }
     setAfastamentoModal(null);
     pushToast(mode === "edit" ? "Afastamento atualizado." : "Afastamento registrado.");
-    await refresh();
+    await Promise.all([loadAfastamentos(), loadDashboardData()]);
   }
 
   async function logout() {
@@ -729,7 +674,7 @@ function useCrmValue() {
     });
     setPreviewDoc((d: any) => d && d.id === documentoId ? {...d, competencia: competencia || null} : d);
     pushToast("Competência salva.");
-    await refresh();
+    await Promise.all([loadDocumentos(), loadDashboardData()]);
   }
 
   const isSindico = me?.papel === "sindico";

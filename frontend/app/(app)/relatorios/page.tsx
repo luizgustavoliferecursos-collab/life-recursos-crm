@@ -1,10 +1,14 @@
 "use client";
 
+import { useEffect } from "react";
 import { useCrm } from "../../lib/CrmContext";
 import { downloadCsv, formatMoney } from "../../lib/ui";
 
 export default function RelatoriosPage() {
-  const {relatorios, funcionarios, documentos, lancamentos} = useCrm();
+  const {relatorios, funcionarios, documentos, lancamentos, loadRelatorios} = useCrm();
+  // Relatorios agregam contratos/postos/escalas, que agora so recarregam
+  // pontualmente onde mudam - visitar esta pagina garante numero atual.
+  useEffect(() => { loadRelatorios(); }, []);
   return (
     <>
       <section className="stats">

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useCrm } from "../../../lib/CrmContext";
-import { api, formatCompetencia, formatDate, formatMoney, statusValidadeClass, statusValidadeLabel, cargoLabel, tipoDocLabel } from "../../../lib/ui";
+import { api, formatCompetencia, formatDate, formatMoney, statusValidadeClass, statusValidadeLabel, cargoLabel, tipoDocLabel, ESCALA_STATUS_LABEL, STATUS_AFASTAMENTO_LABEL, TIPO_AFASTAMENTO_LABEL } from "../../../lib/ui";
 import { Breadcrumb } from "../../../components/Breadcrumb";
 import { EmptyState } from "../../../components/EmptyState";
 
@@ -28,7 +28,7 @@ function iniciais(nome: string): string {
 export default function FichaFuncionarioPage() {
   const params = useParams();
   const id = String(params.id);
-  const {me, setEmployeeModal, employeeModal} = useCrm();
+  const {me, setEmployeeModal, employeeModal, openPreview} = useCrm();
   const [ficha, setFicha] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -57,14 +57,11 @@ export default function FichaFuncionarioPage() {
   const proximosVencimentos = useMemo(() => (ficha?.documentos || [])
     .filter((d: any) => d.status_validade === "vencendo" || d.status_validade === "vencido")
     .sort((a: any, b: any) => (a.data_validade || "").localeCompare(b.data_validade || "")), [ficha]);
-  const escalaSemana = useMemo(() => {
-    const hoje = new Date();
-    const em7dias = new Date(hoje.getTime() + 7 * 86400000);
-    return (ficha?.escalas_mes || []).filter((e: any) => {
-      const d = new Date(e.data);
-      return d >= new Date(hoje.toDateString()) && d <= em7dias;
-    });
-  }, [ficha]);
+  // Janela fixa de 7 dias vinda do backend (independente do mes calendario -
+  // escalas_mes por si so perderia dias do mes seguinte perto do fim do mes).
+  const escalaSemana = ficha?.escalas_proximos_7_dias || [];
+
+  const contratoDoc = useMemo(() => (ficha?.documentos || []).find((d: any) => d.tipo_documento === "Contrato"), [ficha]);
 
   const timeline = useMemo(() => {
     const eventos: {data: string; texto: string}[] = [];
@@ -73,9 +70,6 @@ export default function FichaFuncionarioPage() {
     }
     for (const d of ficha?.documentos || []) {
       eventos.push({data: d.created_at, texto: `Documento "${tipoDocLabel(d.tipo_documento, d.arquivo_nome)}" registrado`});
-    }
-    for (const o of ficha?.ocorrencias || []) {
-      eventos.push({data: o.created_at, texto: `Ocorrência: ${o.titulo}`});
     }
     return eventos.sort((a, b) => (b.data || "").localeCompare(a.data || ""));
   }, [ficha]);
@@ -122,6 +116,7 @@ export default function FichaFuncionarioPage() {
                 {checklistPendente.map((c: any) => (
                   <article key={c.tipo_documento} className={"result " + (c.situacao === "falta" ? "erro" : "duplicado")}>
                     <div><b>{tipoDocLabel(c.tipo_documento)}</b><span>{SITUACAO_LABEL[c.situacao]}</span></div>
+                    {c.documento?.arquivo_drive_url && <button type="button" className="link-btn" onClick={() => openPreview(c.documento)}>Visualizar</button>}
                   </article>
                 ))}
               </div>
@@ -130,9 +125,14 @@ export default function FichaFuncionarioPage() {
           <div className="panel">
             <div className="panel-head"><h3>Próximos vencimentos</h3><span>{proximosVencimentos.length}</span></div>
             {!proximosVencimentos.length ? <EmptyState icon="check-circle" title="Nenhum vencimento próximo" /> : (
-              <div className="table-wrap"><table><thead><tr><th>Documento</th><th>Validade</th><th>Status</th></tr></thead><tbody>
+              <div className="table-wrap"><table><thead><tr><th>Documento</th><th>Validade</th><th>Status</th><th></th></tr></thead><tbody>
                 {proximosVencimentos.map((d: any) => (
-                  <tr key={d.id}><td>{tipoDocLabel(d.tipo_documento)}</td><td>{formatDate(d.data_validade)}</td><td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td></tr>
+                  <tr key={d.id}>
+                    <td>{tipoDocLabel(d.tipo_documento)}</td>
+                    <td>{formatDate(d.data_validade)}</td>
+                    <td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td>
+                    <td className="row-actions">{d.arquivo_drive_url && <button type="button" className="link-btn" onClick={() => openPreview(d)}>Visualizar</button>}</td>
+                  </tr>
                 ))}
               </tbody></table></div>
             )}
@@ -142,7 +142,12 @@ export default function FichaFuncionarioPage() {
             {!escalaSemana.length ? <EmptyState icon="calendar" title="Sem escala nos próximos 7 dias" /> : (
               <div className="table-wrap"><table><thead><tr><th>Data</th><th>Posto</th><th>Condomínio</th><th>Status</th></tr></thead><tbody>
                 {escalaSemana.map((e: any) => (
-                  <tr key={e.id}><td>{formatDate(e.data)}</td><td>{e.postos_trabalho?.nome || "—"}</td><td>{e.postos_trabalho?.condominios?.nome || "—"}</td><td>{e.status}</td></tr>
+                  <tr key={e.id}>
+                    <td>{formatDate(e.data)}</td>
+                    <td>{e.postos_trabalho?.nome || "—"}</td>
+                    <td>{e.postos_trabalho?.condominios?.nome || "—"}</td>
+                    <td><span className={"badge " + (e.status === "falta" ? "danger" : e.status === "substituido" ? "warn" : "")}>{ESCALA_STATUS_LABEL[e.status] || e.status}</span></td>
+                  </tr>
                 ))}
               </tbody></table></div>
             )}
@@ -167,7 +172,10 @@ export default function FichaFuncionarioPage() {
 
       {subtab === "contrato" && (
         <section className="panel">
-          <div className="panel-head"><h3>Contrato</h3></div>
+          <div className="panel-head">
+            <h3>Contrato</h3>
+            {contratoDoc?.arquivo_drive_url && <button type="button" className="primary" onClick={() => openPreview(contratoDoc)}>Visualizar contrato</button>}
+          </div>
           <div className="modal-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
             <div><label className="muted">Data de admissão</label><p>{formatDate(f.data_admissao)}</p></div>
             <div><label className="muted">Cargo</label><p>{cargoLabel(f.cargo)}</p></div>
@@ -175,6 +183,7 @@ export default function FichaFuncionarioPage() {
             {canEditSensitive && <div><label className="muted">Salário base</label><p>{f.salario_base ? formatMoney(f.salario_base) : "—"}</p></div>}
             {f.status === "inativo" && <div><label className="muted">Desligamento</label><p>{formatDate(f.data_desligamento)}{f.motivo_desligamento ? ` · ${f.motivo_desligamento}` : ""}</p></div>}
           </div>
+          {!contratoDoc && <p className="muted" style={{marginTop: 14}}>Nenhum documento de contrato enviado ainda.</p>}
         </section>
       )}
 
@@ -187,12 +196,13 @@ export default function FichaFuncionarioPage() {
           {!ficha.checklist?.length ? (
             <EmptyState icon="file-text" title="Sem checklist obrigatório para este cargo" description="Cargo pendente ou sem documentos obrigatórios configurados." />
           ) : (
-            <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Situação</th><th>Validade</th></tr></thead><tbody>
+            <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Situação</th><th>Validade</th><th></th></tr></thead><tbody>
               {ficha.checklist.map((c: any) => (
                 <tr key={c.tipo_documento}>
                   <td>{tipoDocLabel(c.tipo_documento)}</td>
                   <td><span className={"badge " + SITUACAO_CLASS[c.situacao]}>{SITUACAO_LABEL[c.situacao]}</span></td>
                   <td>{c.documento ? formatDate(c.documento.data_validade) : "—"}{c.documento?.competencia ? ` · ${formatCompetencia(c.documento.competencia)}` : ""}</td>
+                  <td className="row-actions">{c.documento?.arquivo_drive_url && <button type="button" className="link-btn" onClick={() => openPreview(c.documento)}>Visualizar</button>}</td>
                 </tr>
               ))}
             </tbody></table></div>
@@ -205,7 +215,10 @@ export default function FichaFuncionarioPage() {
                   <td>{tipoDocLabel(d.tipo_documento, d.arquivo_nome)}</td>
                   <td>{d.ano || "—"}</td>
                   <td><span className={statusValidadeClass(d.status_validade)}>{statusValidadeLabel(d.status_validade)}</span></td>
-                  <td>{d.arquivo_drive_url ? <a className="link-btn" href={d.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a> : "—"}</td>
+                  <td className="row-actions">{d.arquivo_drive_url ? <>
+                    <button type="button" className="link-btn" onClick={() => openPreview(d)}>Visualizar</button>
+                    <a className="link-btn" href={d.arquivo_drive_url} target="_blank" rel="noopener noreferrer">Abrir ↗</a>
+                  </> : "—"}</td>
                 </tr>
               ))}
             </tbody></table></div>
@@ -223,7 +236,7 @@ export default function FichaFuncionarioPage() {
                   <td>{formatDate(e.data)}</td>
                   <td>{e.postos_trabalho?.nome || "—"}</td>
                   <td>{e.postos_trabalho?.condominios?.nome || "—"}</td>
-                  <td><span className={"badge " + (e.status === "falta" ? "danger" : e.status === "substituido" ? "warn" : "")}>{e.status}</span></td>
+                  <td><span className={"badge " + (e.status === "falta" ? "danger" : e.status === "substituido" ? "warn" : "")}>{ESCALA_STATUS_LABEL[e.status] || e.status}</span></td>
                 </tr>
               ))}
             </tbody></table></div>
@@ -255,7 +268,12 @@ export default function FichaFuncionarioPage() {
           {!ficha.afastamentos?.length ? <EmptyState icon="umbrella" title="Nenhum afastamento registrado" /> : (
             <div className="table-wrap"><table><thead><tr><th>Tipo</th><th>Início</th><th>Fim</th><th>Status</th></tr></thead><tbody>
               {ficha.afastamentos.map((a: any) => (
-                <tr key={a.id}><td>{a.tipo}</td><td>{formatDate(a.data_inicio)}</td><td>{formatDate(a.data_fim)}</td><td>{a.status}</td></tr>
+                <tr key={a.id}>
+                  <td>{TIPO_AFASTAMENTO_LABEL[a.tipo] || a.tipo}</td>
+                  <td>{formatDate(a.data_inicio)}</td>
+                  <td>{formatDate(a.data_fim)}</td>
+                  <td><span className={"badge " + (a.status === "em_andamento" ? "warn" : "")}>{STATUS_AFASTAMENTO_LABEL[a.status] || a.status}</span></td>
+                </tr>
               ))}
             </tbody></table></div>
           )}
@@ -264,7 +282,7 @@ export default function FichaFuncionarioPage() {
 
       {subtab === "historico" && (
         <section className="panel">
-          <div className="panel-head"><h3>Histórico</h3><span>Auditoria + documentos + ocorrências</span></div>
+          <div className="panel-head"><h3>Histórico</h3><span>Auditoria + documentos</span></div>
           {!timeline.length ? <EmptyState icon="clock-history" title="Nenhum evento registrado ainda" /> : (
             <div className="results">
               {timeline.map((ev, i) => (

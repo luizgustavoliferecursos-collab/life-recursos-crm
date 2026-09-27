@@ -1,11 +1,13 @@
 "use client";
 
+import { useEffect } from "react";
 import { useCrm } from "../../../lib/CrmContext";
 import { PAPEL_LABEL } from "../../../lib/ui";
 import { EmptyState } from "../../../components/EmptyState";
 
 export default function UsuariosPage() {
-  const {me, usuarios, setUsuarioModal, toggleUsuarioAtivo} = useCrm();
+  const {me, usuarios, setUsuarioModal, toggleUsuarioAtivo, loadUsuarios} = useCrm();
+  useEffect(() => { loadUsuarios(); }, []);
   if (me && me.papel !== "admin") {
     return <section className="panel"><div className="empty">Acesso restrito a administradores.</div></section>;
   }

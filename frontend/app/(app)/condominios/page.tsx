@@ -20,7 +20,7 @@ export default function CondominiosPage() {
       <div className="panel-head">
         <div><h3>Condomínios</h3><span>{filtrados.length} identificados</span></div>
         <div className="row-actions">
-          <input placeholder="Buscar por nome ou cidade" value={busca} onChange={e => setBusca(e.target.value)} style={{minWidth: 220}} />
+          <input className="local-search" placeholder="Buscar por nome ou cidade" value={busca} onChange={e => setBusca(e.target.value)} />
           <button className="primary" onClick={() => setCondominioModal({mode: "create", condominio: {}})}>Novo condomínio</button>
         </div>
       </div>

@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect } from "react";
 import { useCrm } from "../../../lib/CrmContext";
 import { EmptyState } from "../../../components/EmptyState";
 
 export default function AuditoriaPage() {
-  const {me, auditoria} = useCrm();
+  const {me, auditoria, loadAuditoria} = useCrm();
+  useEffect(() => { loadAuditoria(); }, []);
   if (me && me.papel !== "admin") {
     return <section className="panel"><div className="empty">Acesso restrito a administradores.</div></section>;
   }

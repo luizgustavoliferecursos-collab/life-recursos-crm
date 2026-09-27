@@ -1403,12 +1403,27 @@ def funcionario_ficha(funcionario_id: str):
             db.table("afastamentos").select("*").eq("funcionario_id", funcionario_id).order("data_inicio", desc=True).execute().data or []
         )
 
-        inicio_mes = hoje_brasil().replace(day=1)
+        hoje = hoje_brasil()
+        inicio_mes, fim_mes = month_bounds(hoje.strftime("%Y-%m"))
         escalas_mes = (
             db.table("escalas")
             .select("*,postos_trabalho(nome,condominios(nome))")
             .eq("funcionario_id", funcionario_id)
             .gte("data", inicio_mes.isoformat())
+            .lt("data", fim_mes.isoformat())
+            .order("data")
+            .execute()
+            .data or []
+        )
+        # Janela fixa de 7 dias a partir de hoje, independente do mes calendario
+        # (escalas_mes fica limitado ao mes atual e perderia dias de outubro
+        # se hoje fosse 28-30/set, por exemplo).
+        escalas_proximos_7_dias = (
+            db.table("escalas")
+            .select("*,postos_trabalho(nome,condominios(nome))")
+            .eq("funcionario_id", funcionario_id)
+            .gte("data", hoje.isoformat())
+            .lt("data", (hoje + timedelta(days=7)).isoformat())
             .order("data")
             .execute()
             .data or []
@@ -1427,6 +1442,7 @@ def funcionario_ficha(funcionario_id: str):
             "epis": epis,
             "afastamentos": afastamentos,
             "escalas_mes": escalas_mes,
+            "escalas_proximos_7_dias": escalas_proximos_7_dias,
             "auditoria": auditoria,
             "financeiro": financeiro,
         }
